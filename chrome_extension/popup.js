@@ -500,8 +500,22 @@ chrome.runtime.onMessage.addListener((message) => {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || message.type !== "play_audio") return;
-  console.log("[WebpageTTS] popup received audio bytes", message.audioBuffer?.byteLength);
-  popupPlayer.enqueue(message.audioBuffer);
+  let audioBuffer = message.audioBuffer;
+  if (!audioBuffer && message.audioB64) {
+    const b64 = message.audioB64.startsWith("data:")
+      ? message.audioB64.split(",", 2)[1]
+      : message.audioB64;
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    audioBuffer = bytes.buffer;
+  }
+  console.log("[WebpageTTS] popup received audio bytes", audioBuffer?.byteLength);
+  if (audioBuffer) {
+    popupPlayer.enqueue(audioBuffer);
+  }
   sendResponse({ handled: true });
   return true;
 });

@@ -19,6 +19,7 @@
 - Python: 4‑space indentation, snake_case for functions/vars.
 - JS/HTML/CSS: 2‑space indentation, camelCase for JS vars, kebab-case for CSS classes.
 - Keep edits minimal, readable, and ASCII where possible. No formatter is enforced.
+- Prefer deep, end-to-end logging instrumentation when debugging or adding features that touch runtime behavior. Default to adding logs at each hop (UI → background → offscreen → server), include payload metadata, timings, and error details, and keep them in place unless the user asks to remove them.
 
 ## Testing Guidelines
 - No formal test suite. Use `scripts/test_mlx_tts.py` for a quick MLX sanity check.
