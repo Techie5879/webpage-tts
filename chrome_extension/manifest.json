@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Webpage TTS",
+  "version": "0.1.0",
+  "description": "Read selected text or pages aloud using a local MLX Qwen3-TTS server.",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Webpage TTS"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": ["activeTab", "scripting", "storage", "offscreen"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
