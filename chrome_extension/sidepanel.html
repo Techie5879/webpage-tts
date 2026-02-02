@@ -3,16 +3,16 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Webpage TTS</title>
+    <title>Webpage TTS Sidebar</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
-  <body>
+  <body class="sidebar">
     <div class="app">
       <header class="header">
         <div class="header-row">
           <div>
             <div class="title">Webpage TTS</div>
-            <div class="subtitle">Local MLX Qwen3-TTS voices, straight from your browser.</div>
+            <div class="subtitle">Pinned controls for speaking any page.</div>
           </div>
           <button id="themeToggle" class="theme-toggle" type="button" aria-label="Toggle theme">
             <span class="theme-icon">☀︎</span>
@@ -26,15 +26,10 @@
             <div class="section-title">Session</div>
             <div class="section-sub">Source + playback</div>
           </div>
+          <label class="label" for="serverUrl">Server URL</label>
+          <input id="serverUrl" class="input" type="text" placeholder="http://127.0.0.1:9872" />
+
           <div class="session-grid">
-            <div class="span-2">
-              <label class="label" for="serverUrl">Server URL</label>
-              <input id="serverUrl" class="input" type="text" placeholder="http://127.0.0.1:9872" />
-            </div>
-            <div>
-              <label class="label" for="chunkSize">Chunk size</label>
-              <input id="chunkSize" class="input" type="number" min="200" max="1200" step="20" />
-            </div>
             <div>
               <label class="label" for="source">Text source</label>
               <div class="select-wrap">
@@ -54,6 +49,10 @@
               </div>
             </div>
             <div>
+              <label class="label" for="chunkSize">Chunk size</label>
+              <input id="chunkSize" class="input" type="number" min="200" max="1200" step="20" />
+            </div>
+            <div class="span-3">
               <label id="customModelSizeLabel" class="label">Model size</label>
               <div
                 id="customModelSize"

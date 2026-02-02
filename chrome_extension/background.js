@@ -102,10 +102,22 @@ self.addEventListener("unhandledrejection", (event) => {
 
 chrome.runtime.onInstalled.addListener(() => {
   logInfo("onInstalled");
+  if (chrome.sidePanel?.setPanelBehavior) {
+    chrome.sidePanel
+      .setPanelBehavior({ openPanelOnActionClick: true })
+      .then(() => logInfo("side panel behavior set"))
+      .catch((err) => logWarn("side panel behavior failed", err?.message || err));
+  }
 });
 
 chrome.runtime.onStartup.addListener(() => {
   logInfo("onStartup");
+  if (chrome.sidePanel?.setPanelBehavior) {
+    chrome.sidePanel
+      .setPanelBehavior({ openPanelOnActionClick: true })
+      .then(() => logInfo("side panel behavior set"))
+      .catch((err) => logWarn("side panel behavior failed", err?.message || err));
+  }
 });
 
 async function getActiveTab() {

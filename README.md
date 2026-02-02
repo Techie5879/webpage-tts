@@ -37,6 +37,18 @@ Notes:
 - MLX-only (no Torch/Qwen runtime).
 - English-only is enforced at the server level (no language selector).
 
+## Models (Qwen3-TTS family)
+Use these to pick the right model for each mode.
+
+**Model roles**
+- **VoiceDesign**: create a brand-new voice from a natural-language description.
+- **CustomVoice**: use preset timbres; instruction control is available on the 1.7B model.
+- **Base**: voice cloning from short reference audio (used for cloning and fine-tuning).
+
+**Sizes**
+- **1.7B**: peak performance and control.
+- **0.6B**: balance of performance and efficiency.
+
 ## MLX CLI quick test
 ```bash
 python -m mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit --text "Hello, this is a test."
@@ -60,7 +72,7 @@ generate_audio(
 1. Open `chrome://extensions`.
 2. Enable **Developer mode**.
 3. Click **Load unpacked** and select `chrome_extension`.
-4. Click the extension icon to open the popup.
+4. Click the extension icon to open the right-hand side panel.
 5. If you update extension files, click **Reload** for the extension in `chrome://extensions`.
 6. Optional: set the extension **Site access** to “On all sites” if you see “Receiving end does not exist”.
 
@@ -93,15 +105,11 @@ Each attempt has a hard 120s timeout (override with `--timeout`).
 - `GET /speakers`
 - `POST /tts`
 
-## Gotchas (important)
-- **MLX-only**: Torch/Qwen runtimes are removed. Only MLX models are supported.
-- **MLX runs on Apple Metal** (no CPU fallback). Expect large models to take significant memory.
-- **Voice Design requires the MLX VoiceDesign model**. If it isn’t configured, the server returns a 400.
-- **Voice Clone requires ref text** (no auto-transcription). If you need STT, you must add it yourself.
-- **Speaker list is fixed** to the CustomVoice speaker set.
-- **Tokenizer regex warning**: MLX Qwen3‑TTS can trigger a tokenizer regex warning; the server reloads the tokenizer with `fix_mistral_regex=True`.
-- **Audio playback uses an offscreen document** so it won’t be blocked by page autoplay policies. If you still hear nothing, make sure the extension is reloaded after changes.
-- **Chrome internal pages are blocked**. If you see “Receiving end does not exist,” open a normal webpage (not `chrome://`, the Chrome Web Store, or extension pages) and try again.
+## Notes & troubleshooting
+- MLX runs on Apple Metal (no CPU fallback). Expect large models to take significant memory.
+- Voice Design needs the VoiceDesign model; Voice Clone needs reference audio + transcript.
+- The speaker list is fixed to the CustomVoice speaker set.
+- If you see “Receiving end does not exist,” open a normal webpage (not Chrome internal pages) and try again.
 
 ## Caching & re-downloads
 Hugging Face downloads are cached. If you’re seeing re-downloads, set a stable cache path:

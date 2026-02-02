@@ -4,13 +4,15 @@
   "version": "0.1.0",
   "description": "Read selected text or pages aloud using a local MLX Qwen3-TTS server.",
   "action": {
-    "default_popup": "popup.html",
     "default_title": "Webpage TTS"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
   },
   "background": {
     "service_worker": "background.js"
   },
-  "permissions": ["activeTab", "scripting", "storage", "offscreen"],
+  "permissions": ["activeTab", "scripting", "storage", "offscreen", "sidePanel"],
   "host_permissions": [
     "http://127.0.0.1/*",
     "http://localhost/*",

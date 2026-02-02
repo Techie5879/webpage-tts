@@ -1,11 +1,17 @@
 const DEFAULTS = {
   serverUrl: "http://127.0.0.1:9872",
   source: "selection",
-  mode: "default",
+  mode: "custom",
   chunkSize: 420,
   playbackTarget: "offscreen",
   speaker: "Vivian",
   customModelSize: "0.6b",
+  instruction: "",
+  designPrompt: "",
+  designName: "",
+  cloneText: "",
+  cloneName: "",
+  theme: "light",
   savedVoices: [],
 };
 
@@ -117,8 +123,9 @@ const els = {
   source: document.getElementById("source"),
   playbackTarget: document.getElementById("playbackTarget"),
   chunkSize: document.getElementById("chunkSize"),
-  speaker: document.getElementById("speaker"),
+  speakerButtons: document.getElementById("speakerButtons"),
   customModelSize: document.getElementById("customModelSize"),
+  customModelSizeInputs: Array.from(document.querySelectorAll("input[name=\"customModelSize\"]")),
   instruction: document.getElementById("instruction"),
   designPrompt: document.getElementById("designPrompt"),
   designName: document.getElementById("designName"),
@@ -137,9 +144,9 @@ const els = {
   resume: document.getElementById("resume"),
   stop: document.getElementById("stop"),
   status: document.getElementById("status"),
+  themeToggle: document.getElementById("themeToggle"),
   modeButtons: Array.from(document.querySelectorAll(".mode-btn")),
   modePanels: {
-    default: document.getElementById("mode-default"),
     custom: document.getElementById("mode-custom"),
     design: document.getElementById("mode-design"),
     clone: document.getElementById("mode-clone"),
@@ -148,6 +155,7 @@ const els = {
 
 let cachedVoices = [];
 let activeCloneAudioB64 = null;
+let selectedSpeaker = DEFAULTS.speaker;
 const popupPlayer = new AudioQueue();
 
 function setStatus(text, tone = "info") {
@@ -161,20 +169,27 @@ function setMode(mode) {
     btn.classList.toggle("active", btn.dataset.mode === mode);
   });
   Object.entries(els.modePanels).forEach(([key, panel]) => {
-    panel.classList.toggle("active", key === mode);
+    if (panel) {
+      panel.classList.toggle("active", key === mode);
+    }
   });
-  els.speaker.disabled = mode !== "custom";
   chrome.storage.local.set({ mode });
 }
 
-function populateSpeakers(list, selected) {
-  els.speaker.innerHTML = "";
+function renderSpeakerButtons(list, selected) {
+  els.speakerButtons.innerHTML = "";
   list.forEach((speaker) => {
-    const option = document.createElement("option");
-    option.value = speaker;
-    option.textContent = speaker;
-    if (speaker === selected) option.selected = true;
-    els.speaker.appendChild(option);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "speaker-btn";
+    button.textContent = speaker;
+    if (speaker === selected) button.classList.add("active");
+    button.addEventListener("click", () => {
+      selectedSpeaker = speaker;
+      saveSetting("speaker", speaker);
+      renderSpeakerButtons(list, speaker);
+    });
+    els.speakerButtons.appendChild(button);
   });
 }
 
@@ -213,25 +228,75 @@ function renderSavedVoices(voices, selectedId = null) {
   });
 }
 
+function getSelectedModelSize() {
+  return (
+    els.customModelSizeInputs.find((input) => input.checked)?.value ||
+    DEFAULTS.customModelSize
+  );
+}
+
+function setSelectedModelSize(value) {
+  let matched = false;
+  els.customModelSizeInputs.forEach((input) => {
+    const isMatch = input.value === value;
+    input.checked = isMatch;
+    if (isMatch) matched = true;
+  });
+  if (!matched && els.customModelSizeInputs[0]) {
+    els.customModelSizeInputs[0].checked = true;
+  }
+}
+
 async function loadSettings() {
   const settings = await chrome.storage.local.get(DEFAULTS);
   els.serverUrl.value = settings.serverUrl;
   els.source.value = settings.source;
   els.playbackTarget.value = settings.playbackTarget || DEFAULTS.playbackTarget;
   els.chunkSize.value = settings.chunkSize;
-  els.customModelSize.value = settings.customModelSize || DEFAULTS.customModelSize;
+  setSelectedModelSize(settings.customModelSize || DEFAULTS.customModelSize);
+  els.instruction.value = settings.instruction || "";
+  els.designPrompt.value = settings.designPrompt || "";
+  els.designName.value = settings.designName || "";
+  els.cloneText.value = settings.cloneText || "";
+  els.cloneName.value = settings.cloneName || "";
+  applyTheme(settings.theme || DEFAULTS.theme);
 
-  setMode(settings.mode || "default");
+  const initialMode = settings.mode === "default" ? "custom" : settings.mode;
+  setMode(initialMode || "custom");
 
   cachedVoices = settings.savedVoices || [];
   renderSavedVoices(cachedVoices);
 
   const speakers = await fetchSpeakers(settings.serverUrl);
-  populateSpeakers(speakers, settings.speaker || DEFAULTS.speaker);
+  selectedSpeaker = settings.speaker || DEFAULTS.speaker;
+  renderSpeakerButtons(speakers, selectedSpeaker);
+}
+
+function applyTheme(theme) {
+  const normalized = theme === "dark" ? "dark" : "light";
+  document.body.dataset.theme = normalized;
+  if (els.themeToggle) {
+    const icon = els.themeToggle.querySelector(".theme-icon");
+    const text = els.themeToggle.querySelector(".theme-text");
+    if (icon) icon.textContent = normalized === "dark" ? "☾" : "☀︎";
+    if (text) text.textContent = normalized === "dark" ? "Dark" : "Light";
+  }
 }
 
 function saveSetting(key, value) {
   chrome.storage.local.set({ [key]: value });
+}
+
+const pendingSaves = new Map();
+function saveSettingDebounced(key, value, delay = 300) {
+  if (pendingSaves.has(key)) {
+    clearTimeout(pendingSaves.get(key));
+  }
+  const timeout = setTimeout(() => {
+    saveSetting(key, value);
+    pendingSaves.delete(key);
+  }, delay);
+  pendingSaves.set(key, timeout);
 }
 
 function readFileAsBase64(file) {
@@ -252,10 +317,16 @@ function getSavedVoiceById(id) {
   return cachedVoices.find((voice) => voice.id === id);
 }
 
+function hasSavedVoiceName(name) {
+  const normalized = name.trim().toLowerCase();
+  if (!normalized) return false;
+  return cachedVoices.some((voice) => (voice.name || "").trim().toLowerCase() === normalized);
+}
+
 async function refreshSpeakers() {
   const serverUrl = els.serverUrl.value.trim() || DEFAULTS.serverUrl;
   const speakers = await fetchSpeakers(serverUrl);
-  populateSpeakers(speakers, els.speaker.value || DEFAULTS.speaker);
+  renderSpeakerButtons(speakers, selectedSpeaker || DEFAULTS.speaker);
 }
 
 els.serverUrl.addEventListener("change", () => {
@@ -270,10 +341,33 @@ els.playbackTarget.addEventListener("change", () =>
 els.chunkSize.addEventListener("change", () =>
   saveSetting("chunkSize", Number(els.chunkSize.value))
 );
-els.speaker.addEventListener("change", () => saveSetting("speaker", els.speaker.value));
-els.customModelSize.addEventListener("change", () =>
-  saveSetting("customModelSize", els.customModelSize.value)
+els.customModelSize.addEventListener("change", (event) => {
+  if (event.target?.name !== "customModelSize") return;
+  saveSetting("customModelSize", getSelectedModelSize());
+});
+els.instruction.addEventListener("input", () =>
+  saveSettingDebounced("instruction", els.instruction.value)
 );
+els.designPrompt.addEventListener("input", () =>
+  saveSettingDebounced("designPrompt", els.designPrompt.value)
+);
+els.designName.addEventListener("input", () =>
+  saveSettingDebounced("designName", els.designName.value)
+);
+els.cloneText.addEventListener("input", () =>
+  saveSettingDebounced("cloneText", els.cloneText.value)
+);
+els.cloneName.addEventListener("input", () =>
+  saveSettingDebounced("cloneName", els.cloneName.value)
+);
+
+if (els.themeToggle) {
+  els.themeToggle.addEventListener("click", () => {
+    const nextTheme = document.body.dataset.theme === "dark" ? "light" : "dark";
+    applyTheme(nextTheme);
+    saveSetting("theme", nextTheme);
+  });
+}
 
 els.cloneAudio.addEventListener("change", () => {
   activeCloneAudioB64 = null;
@@ -288,6 +382,10 @@ els.saveDesign.addEventListener("click", async () => {
   const prompt = els.designPrompt.value.trim();
   if (!name || !prompt) {
     setStatus("Add a name and voice description before saving.", "error");
+    return;
+  }
+  if (hasSavedVoiceName(name)) {
+    setStatus("A saved voice with that name already exists.", "error");
     return;
   }
   const voice = { id: crypto.randomUUID(), name, type: "design", instruction: prompt };
@@ -309,6 +407,10 @@ els.saveClone.addEventListener("click", async () => {
 
   if (!name || !refAudioB64) {
     setStatus("Provide a name and reference audio before saving.", "error");
+    return;
+  }
+  if (hasSavedVoiceName(name)) {
+    setStatus("A saved voice with that name already exists.", "error");
     return;
   }
   if (!refText) {
@@ -340,12 +442,16 @@ els.applyVoice.addEventListener("click", () => {
     setMode("design");
     els.designPrompt.value = voice.instruction || "";
     els.designName.value = voice.name || "";
+    saveSetting("designPrompt", els.designPrompt.value);
+    saveSetting("designName", els.designName.value);
     setStatus(`Applied design voice: ${voice.name}`);
   } else if (voice.type === "clone") {
     setMode("clone");
     activeCloneAudioB64 = voice.refAudioB64 || null;
     els.cloneText.value = voice.refText || "";
     els.cloneName.value = voice.name || "";
+    saveSetting("cloneText", els.cloneText.value);
+    saveSetting("cloneName", els.cloneName.value);
     setStatus(`Applied clone voice: ${voice.name}`);
   }
 });
@@ -377,10 +483,10 @@ els.speak.addEventListener("click", async () => {
     playbackTarget,
     mode,
   };
-  payload.customModelSize = els.customModelSize.value;
+  payload.customModelSize = getSelectedModelSize();
 
   if (mode === "custom") {
-    payload.speaker = els.speaker.value;
+    payload.speaker = selectedSpeaker;
     payload.instruction = els.instruction.value.trim() || null;
   }
 
