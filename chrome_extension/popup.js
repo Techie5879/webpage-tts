@@ -6,6 +6,7 @@ const DEFAULTS = {
   playbackTarget: "offscreen",
   speaker: "Vivian",
   customModelSize: "0.6b",
+  playbackRate: 1,
   instruction: "",
   designPrompt: "",
   designName: "",
@@ -13,6 +14,11 @@ const DEFAULTS = {
   cloneName: "",
   theme: "light",
   savedVoices: [],
+  collapsedSections: {
+    session: false,
+    voice: false,
+    saved: false,
+  },
 };
 
 const FALLBACK_SPEAKERS = [
@@ -28,11 +34,18 @@ const FALLBACK_SPEAKERS = [
 ];
 
 class AudioQueue {
-  constructor() {
+  constructor(onProgress = null) {
     this.ctx = null;
     this.queue = [];
     this.current = null;
     this.paused = false;
+    this.playbackRate = 1;
+    this.totalDurationSec = 0;
+    this.playedDurationSec = 0;
+    this.currentDurationSec = 0;
+    this.currentStartTime = 0;
+    this.progressTimer = null;
+    this.onProgress = onProgress;
   }
 
   async _ensureContext() {
@@ -66,19 +79,65 @@ class AudioQueue {
     }
   }
 
-  async enqueue(audioBuffer) {
+  _emitProgress(state = null) {
+    if (!this.onProgress) return;
+    const now = this.ctx ? this.ctx.currentTime : 0;
+    const rate = this.current?.playbackRate?.value || this.playbackRate || 1;
+    const elapsed = Math.max(0, (now - this.currentStartTime) * rate);
+    const playedSec = this.playedDurationSec + Math.min(elapsed, this.currentDurationSec || elapsed);
+    const totalSec = this.totalDurationSec;
+    const resolvedState =
+      state || (this.paused ? "paused" : this.current ? "playing" : "idle");
+    this.onProgress({ playedSec, totalSec, state: resolvedState });
+  }
+
+  _startProgressTimer() {
+    if (this.progressTimer) return;
+    this.progressTimer = window.setInterval(() => {
+      this._emitProgress();
+    }, 200);
+  }
+
+  _stopProgressTimer() {
+    if (this.progressTimer) {
+      window.clearInterval(this.progressTimer);
+      this.progressTimer = null;
+    }
+  }
+
+  async enqueue(audioBuffer, playbackRate = null, durationSec = null) {
     await this._ensureContext();
-    this.queue.push(audioBuffer);
+    const rate = playbackRate ?? this.playbackRate;
+    if (Number.isFinite(durationSec) && durationSec > 0) {
+      this.totalDurationSec += durationSec;
+    }
+    this.queue.push({
+      buffer: audioBuffer,
+      playbackRate: rate,
+      durationSec: durationSec || 0,
+    });
     console.log("[WebpageTTS] popup queue length", this.queue.length);
+    this._emitProgress("buffering");
     if (!this.current && !this.paused) {
       this._playNext();
     }
   }
 
   async _playNext() {
-    if (this.queue.length === 0 || this.paused) return;
+    if (this.queue.length === 0 || this.paused) {
+      if (!this.current) {
+        this._stopProgressTimer();
+        const isComplete =
+          this.totalDurationSec > 0 && this.playedDurationSec >= this.totalDurationSec - 0.05;
+        this._emitProgress(isComplete ? "done" : "idle");
+      }
+      return;
+    }
 
-    const buffer = this.queue.shift();
+    const item = this.queue.shift();
+    const buffer = item?.buffer || item;
+    const rate = item?.playbackRate || this.playbackRate || 1;
+    const durationSec = item?.durationSec || 0;
     let decoded;
     try {
       decoded = await this.ctx.decodeAudioData(buffer.slice(0));
@@ -91,17 +150,32 @@ class AudioQueue {
 
     const source = this.ctx.createBufferSource();
     source.buffer = decoded;
+    source.playbackRate.value = rate;
     source.connect(this.ctx.destination);
     this.current = source;
+    this.currentDurationSec = durationSec || decoded.duration || 0;
+    this.currentStartTime = this.ctx.currentTime;
+    if (!durationSec && decoded.duration) {
+      this.totalDurationSec += decoded.duration;
+    }
 
     source.onended = () => {
+      const finished = Number.isFinite(decoded.duration) ? decoded.duration : this.currentDurationSec;
+      if (finished > 0) {
+        this.playedDurationSec += finished;
+      }
       if (this.current === source) {
         this.current = null;
+        this.currentDurationSec = 0;
+        this.currentStartTime = 0;
+        this._emitProgress("buffering");
         this._playNext();
       }
     };
 
     source.start(0);
+    this._startProgressTimer();
+    this._emitProgress("playing");
   }
 
   stop() {
@@ -115,6 +189,30 @@ class AudioQueue {
       }
       this.current = null;
     }
+    this.totalDurationSec = 0;
+    this.playedDurationSec = 0;
+    this.currentDurationSec = 0;
+    this.currentStartTime = 0;
+    this._stopProgressTimer();
+    this._emitProgress("stopped");
+  }
+
+  setPlaybackRate(rate) {
+    const normalized = Number(rate);
+    if (!Number.isFinite(normalized) || normalized <= 0) return;
+    this.playbackRate = normalized;
+    this.queue = this.queue.map((item) => ({
+      buffer: item?.buffer || item,
+      playbackRate: normalized,
+    }));
+    if (this.current) {
+      try {
+        this.current.playbackRate.value = normalized;
+      } catch (_) {
+        // ignore
+      }
+    }
+    this._emitProgress();
   }
 }
 
@@ -124,8 +222,13 @@ const els = {
   playbackTarget: document.getElementById("playbackTarget"),
   chunkSize: document.getElementById("chunkSize"),
   speakerButtons: document.getElementById("speakerButtons"),
+  speakerBlock: document.querySelector(".speaker-block"),
   customModelSize: document.getElementById("customModelSize"),
   customModelSizeInputs: Array.from(document.querySelectorAll("input[name=\"customModelSize\"]")),
+  playbackSpeed: document.getElementById("playbackSpeed"),
+  playbackRateInputs: Array.from(document.querySelectorAll("input[name=\"playbackRate\"]")),
+  playbackProgressFill: document.getElementById("playbackProgressFill"),
+  playbackProgressText: document.getElementById("playbackProgressText"),
   instruction: document.getElementById("instruction"),
   designPrompt: document.getElementById("designPrompt"),
   designName: document.getElementById("designName"),
@@ -151,12 +254,31 @@ const els = {
     design: document.getElementById("mode-design"),
     clone: document.getElementById("mode-clone"),
   },
+  collapsibleSections: Array.from(document.querySelectorAll(".collapsible")),
 };
 
 let cachedVoices = [];
 let activeCloneAudioB64 = null;
 let selectedSpeaker = DEFAULTS.speaker;
-const popupPlayer = new AudioQueue();
+const popupPlayer = new AudioQueue((progress) => {
+  setProgressDisplay({
+    playedSec: progress.playedSec,
+    totalSec: progress.totalSec,
+    state: progress.state,
+  });
+});
+let activeProgress = {
+  total: 0,
+  index: 0,
+  receivedDurationSec: 0,
+  avgChunkSec: 0,
+  playedSec: 0,
+  totalSec: 0,
+  bufferedSec: 0,
+  allBuffered: false,
+  state: "idle",
+  speed: 1,
+};
 
 function setStatus(text, tone = "info") {
   els.status.textContent = text;
@@ -173,7 +295,122 @@ function setMode(mode) {
       panel.classList.toggle("active", key === mode);
     }
   });
+  if (els.speakerBlock) {
+    els.speakerBlock.classList.toggle("is-hidden", mode !== "custom");
+  }
   chrome.storage.local.set({ mode });
+}
+
+function formatClock(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return "--:--";
+  const total = Math.max(0, Math.floor(seconds));
+  const hrs = Math.floor(total / 3600);
+  const mins = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hrs > 0) {
+    return `${hrs}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  }
+  return `${mins}:${String(secs).padStart(2, "0")}`;
+}
+
+function setProgressDisplay(update = {}) {
+  if (!els.playbackProgressFill || !els.playbackProgressText) return;
+  activeProgress = { ...activeProgress, ...update };
+  const {
+    total,
+    index,
+    etaSeconds,
+    playedSec,
+    totalSec,
+    bufferedSec,
+    allBuffered,
+    state,
+  } = activeProgress;
+
+  const hasPlayback = Number.isFinite(totalSec) && totalSec > 0;
+  let percent = 0;
+  let text = "Idle.";
+
+  if (hasPlayback) {
+    const safePlayed = Math.min(Math.max(0, playedSec || 0), totalSec);
+    percent = Math.min(100, Math.round((safePlayed / totalSec) * 100));
+    const isComplete =
+      Number.isFinite(totalSec) && totalSec > 0 && safePlayed >= totalSec - 0.05;
+    const label =
+      state === "paused"
+        ? "Paused"
+        : state === "stopped"
+        ? "Stopped"
+        : state === "buffering" || (!allBuffered && state === "playing")
+        ? "Buffering"
+        : state === "done" || (state === "idle" && isComplete)
+        ? "Done"
+        : state === "idle"
+        ? "Idle"
+        : "Playing";
+    const bufferedLabel =
+      Number.isFinite(bufferedSec) && bufferedSec > safePlayed
+        ? ` (buffered ${formatClock(bufferedSec)})`
+        : "";
+    text = `${label} ${formatClock(safePlayed)} / ${formatClock(totalSec)}${bufferedLabel}`;
+  } else if (total > 0 && index > 0) {
+    const etaLabel = etaSeconds !== null ? formatEta(etaSeconds) : "--:--";
+    text = `Buffering chunk ${index}/${total} - ETA ${etaLabel}`;
+    percent = Math.min(100, Math.round((index / total) * 100));
+  } else if (total > 0) {
+    text = `${total} chunk(s) queued`;
+    percent = 0;
+  }
+
+  els.playbackProgressFill.style.width = `${percent}%`;
+  els.playbackProgressText.textContent = text;
+}
+
+function formatEta(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return "--:--";
+  const clamped = Math.max(0, Math.round(seconds));
+  const mins = Math.floor(clamped / 60);
+  const secs = clamped % 60;
+  return `${mins}:${String(secs).padStart(2, "0")}`;
+}
+
+function updateProgressFromTiming() {
+  if (!activeProgress.total || !activeProgress.index) return;
+  const remaining = Math.max(0, activeProgress.total - activeProgress.index);
+  const avg = activeProgress.avgChunkSec || 0;
+  const etaSeconds = avg ? (remaining * avg) / Math.max(0.1, activeProgress.speed) : null;
+  setProgressDisplay({
+    total: activeProgress.total,
+    index: activeProgress.index,
+    etaSeconds,
+  });
+}
+
+function setPlaybackRate(value) {
+  const normalized = Number(value);
+  if (!Number.isFinite(normalized) || normalized <= 0) return;
+  els.playbackRateInputs.forEach((input) => {
+    input.checked = Number(input.value) === normalized;
+  });
+  activeProgress.speed = normalized;
+  saveSetting("playbackRate", normalized);
+  popupPlayer.setPlaybackRate(normalized);
+  chrome.runtime.sendMessage({ type: "set_playback_rate", rate: normalized });
+  updateProgressFromTiming();
+}
+
+function applyCollapsedState(section, isCollapsed) {
+  if (!section) return;
+  section.classList.toggle("is-collapsed", isCollapsed);
+  const toggle = section.querySelector(".collapse-toggle");
+  const body = section.querySelector(".section-body");
+  if (toggle) {
+    toggle.textContent = isCollapsed ? "Expand" : "Collapse";
+    toggle.setAttribute("aria-expanded", String(!isCollapsed));
+  }
+  if (body) {
+    body.setAttribute("aria-hidden", String(isCollapsed));
+  }
 }
 
 function renderSpeakerButtons(list, selected) {
@@ -254,6 +491,7 @@ async function loadSettings() {
   els.playbackTarget.value = settings.playbackTarget || DEFAULTS.playbackTarget;
   els.chunkSize.value = settings.chunkSize;
   setSelectedModelSize(settings.customModelSize || DEFAULTS.customModelSize);
+  setPlaybackRate(settings.playbackRate || DEFAULTS.playbackRate);
   els.instruction.value = settings.instruction || "";
   els.designPrompt.value = settings.designPrompt || "";
   els.designName.value = settings.designName || "";
@@ -263,6 +501,12 @@ async function loadSettings() {
 
   const initialMode = settings.mode === "default" ? "custom" : settings.mode;
   setMode(initialMode || "custom");
+
+  const collapsed = settings.collapsedSections || DEFAULTS.collapsedSections;
+  els.collapsibleSections.forEach((section) => {
+    const key = section.dataset.section;
+    applyCollapsedState(section, Boolean(collapsed?.[key]));
+  });
 
   cachedVoices = settings.savedVoices || [];
   renderSavedVoices(cachedVoices);
@@ -341,6 +585,10 @@ els.playbackTarget.addEventListener("change", () =>
 els.chunkSize.addEventListener("change", () =>
   saveSetting("chunkSize", Number(els.chunkSize.value))
 );
+els.playbackSpeed?.addEventListener("change", (event) => {
+  if (event.target?.name !== "playbackRate") return;
+  setPlaybackRate(event.target.value);
+});
 els.customModelSize.addEventListener("change", (event) => {
   if (event.target?.name !== "customModelSize") return;
   saveSetting("customModelSize", getSelectedModelSize());
@@ -375,6 +623,20 @@ els.cloneAudio.addEventListener("change", () => {
 
 els.modeButtons.forEach((btn) => {
   btn.addEventListener("click", () => setMode(btn.dataset.mode));
+});
+
+els.collapsibleSections.forEach((section) => {
+  const toggle = section.querySelector(".collapse-toggle");
+  if (!toggle) return;
+  toggle.addEventListener("click", () => {
+    const key = section.dataset.section;
+    const nextState = !section.classList.contains("is-collapsed");
+    applyCollapsedState(section, nextState);
+    chrome.storage.local.get({ collapsedSections: DEFAULTS.collapsedSections }, (data) => {
+      const next = { ...(data.collapsedSections || {}), [key]: nextState };
+      saveSetting("collapsedSections", next);
+    });
+  });
 });
 
 els.saveDesign.addEventListener("click", async () => {
@@ -474,6 +736,27 @@ els.speak.addEventListener("click", async () => {
   const source = els.source.value;
   const chunkSize = Number(els.chunkSize.value) || DEFAULTS.chunkSize;
   const playbackTarget = els.playbackTarget.value || DEFAULTS.playbackTarget;
+  activeProgress = {
+    total: 0,
+    index: 0,
+    receivedDurationSec: 0,
+    avgChunkSec: 0,
+    playedSec: 0,
+    totalSec: 0,
+    bufferedSec: 0,
+    allBuffered: false,
+    state: "buffering",
+    speed: activeProgress.speed || DEFAULTS.playbackRate,
+  };
+  setProgressDisplay({
+    total: 0,
+    index: 0,
+    etaSeconds: null,
+    playedSec: 0,
+    totalSec: 0,
+    bufferedSec: 0,
+    allBuffered: false,
+  });
 
   const payload = {
     type: "speak",
@@ -482,6 +765,7 @@ els.speak.addEventListener("click", async () => {
     chunkSize,
     playbackTarget,
     mode,
+    playbackRate: activeProgress.speed,
   };
   payload.customModelSize = getSelectedModelSize();
 
@@ -591,16 +875,88 @@ els.stop.addEventListener("click", () => {
   chrome.runtime.sendMessage({ type: "stop" });
   popupPlayer.stop();
   setStatus("Stopped.");
+  setProgressDisplay({
+    total: 0,
+    index: 0,
+    etaSeconds: null,
+    playedSec: 0,
+    totalSec: 0,
+    bufferedSec: 0,
+    allBuffered: false,
+    state: "stopped",
+  });
 });
 
 chrome.runtime.onMessage.addListener((message) => {
   if (!message || message.type !== "progress") return;
   if (message.stage === "start") {
     setStatus(`Speaking... ${message.chunks} chunk(s).`);
+    activeProgress = {
+      total: message.chunks || 0,
+      index: 0,
+      receivedDurationSec: 0,
+      avgChunkSec: 0,
+      playedSec: 0,
+      totalSec: 0,
+      bufferedSec: 0,
+      allBuffered: false,
+      state: "buffering",
+      speed: activeProgress.speed || DEFAULTS.playbackRate,
+    };
+    setProgressDisplay({
+      total: activeProgress.total,
+      index: 0,
+      etaSeconds: null,
+      playedSec: 0,
+      totalSec: 0,
+      bufferedSec: 0,
+      state: "buffering",
+    });
   } else if (message.stage === "chunk") {
     setStatus(`Speaking chunk ${message.index}/${message.total}`);
+    if (message.durationSec) {
+      activeProgress.receivedDurationSec += message.durationSec;
+      activeProgress.avgChunkSec = activeProgress.receivedDurationSec / Math.max(1, message.index);
+      activeProgress.bufferedSec = activeProgress.receivedDurationSec;
+    } else if (message.elapsedMs) {
+      activeProgress.avgChunkSec = message.elapsedMs / 1000 / Math.max(1, message.index);
+    }
+    activeProgress.total = message.total || activeProgress.total;
+    activeProgress.index = message.index || activeProgress.index;
+    updateProgressFromTiming();
   } else if (message.stage === "done") {
     setStatus("Done.");
+    setProgressDisplay({
+      total: activeProgress.total,
+      index: activeProgress.total,
+      etaSeconds: 0,
+      allBuffered: true,
+      state: "buffering",
+    });
+  } else if (message.stage === "stopped") {
+    setStatus("Stopped.");
+    setProgressDisplay({
+      total: 0,
+      index: 0,
+      etaSeconds: null,
+      playedSec: 0,
+      totalSec: 0,
+      bufferedSec: 0,
+      allBuffered: false,
+      state: "stopped",
+    });
+  }
+});
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (!message || message.type !== "playback_progress") return;
+  if (Number.isFinite(message.playedSec) || Number.isFinite(message.totalSec)) {
+    setProgressDisplay({
+      playedSec: Number(message.playedSec) || 0,
+      totalSec: Number(message.totalSec) || 0,
+      bufferedSec: Number(message.totalSec) || 0,
+      state: message.state || "playing",
+    });
   }
 });
 
@@ -620,7 +976,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
   console.log("[WebpageTTS] popup received audio bytes", audioBuffer?.byteLength);
   if (audioBuffer) {
-    popupPlayer.enqueue(audioBuffer);
+    const rate =
+      Number.isFinite(Number(message.playbackRate)) && Number(message.playbackRate) > 0
+        ? Number(message.playbackRate)
+        : activeProgress.speed || DEFAULTS.playbackRate;
+    popupPlayer.enqueue(audioBuffer, rate, Number(message.durationSec) || null);
   }
   sendResponse({ handled: true });
   return true;

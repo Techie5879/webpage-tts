@@ -119,10 +119,16 @@ body.sidebar .app {
 
 .section-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 10px;
   margin-bottom: 12px;
+}
+
+.section-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .section-title {
@@ -136,6 +142,20 @@ body.sidebar .app {
 .section-sub {
   font-size: 11px;
   color: var(--muted);
+}
+
+.collapse-toggle {
+  border: 1px solid var(--border);
+  background: var(--accent-ghost);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--ink);
+  box-shadow: none;
+}
+
+.collapsible.is-collapsed .section-body {
+  display: none;
 }
 
 .label {
@@ -156,6 +176,28 @@ body.sidebar .app {
   font-size: 13px;
   background: var(--field);
   color: var(--ink);
+}
+
+.file-input::file-selector-button {
+  border: 1px solid var(--border);
+  background: var(--accent-ghost);
+  color: var(--ink);
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  margin-right: 10px;
+  cursor: pointer;
+}
+
+.file-input::-webkit-file-upload-button {
+  border: 1px solid var(--border);
+  background: var(--accent-ghost);
+  color: var(--ink);
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  margin-right: 10px;
+  cursor: pointer;
 }
 
 .select {
@@ -210,8 +252,22 @@ body.sidebar .app {
 
 .session-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 10px;
+}
+
+.session-server {
+  grid-column: span 4;
+}
+
+.session-model {
+  grid-column: span 2;
+}
+
+.session-chunk,
+.session-source,
+.session-playback {
+  grid-column: span 2;
 }
 
 .span-3 {
@@ -224,6 +280,10 @@ body.sidebar .app {
 
 .speaker-block {
   margin-top: 12px;
+}
+
+.speaker-block.is-hidden {
+  display: none;
 }
 
 .actions-row {
@@ -270,6 +330,10 @@ body.sidebar .app {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+}
+
+#playbackSpeed {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .option-chip {
@@ -404,6 +468,41 @@ button.danger {
   color: var(--muted);
 }
 
+.playback-meta {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+  gap: 12px;
+  margin-bottom: 12px;
+  align-items: center;
+}
+
+.playback-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.progress-track {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--accent-ghost);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(120deg, var(--accent), var(--accent-strong));
+  transition: width 0.25s ease;
+}
+
+.progress-text {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .theme-toggle {
   display: inline-flex;
   align-items: center;
@@ -437,18 +536,24 @@ button.danger {
     flex-direction: column;
   }
   .session-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .session-server,
+  .session-model {
+    grid-column: span 3;
+  }
+  .session-chunk,
+  .session-source,
+  .session-playback {
+    grid-column: span 1;
   }
   .span-2 {
     grid-column: auto;
   }
-  .option-group {
-    grid-template-columns: 1fr;
-  }
-  .mode-grid {
-    grid-template-columns: 1fr;
-  }
   .actions {
+    grid-template-columns: 1fr;
+  }
+  .playback-meta {
     grid-template-columns: 1fr;
   }
 }

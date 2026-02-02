@@ -94,6 +94,13 @@ function logAudioBufferMeta(arrayBuffer) {
   logInfo("audio buffer meta", { header, prefixHex });
 }
 
+function isAbortError(err) {
+  if (!err) return false;
+  if (err.name === "AbortError") return true;
+  const msg = String(err.message || err);
+  return msg.toLowerCase().includes("aborted") || msg.toLowerCase().includes("signal");
+}
+
 logInfo("service worker loaded");
 
 self.addEventListener("unhandledrejection", (event) => {
@@ -375,28 +382,35 @@ async function runSpeak(message, sender) {
 
   const speaker = message.speaker || null;
   const instruction = message.instruction || null;
-  const customModelSize = message.customModelSize || null;
-  const refAudioB64 = message.refAudioB64 || null;
-  const refText = message.refText || null;
+    const customModelSize = message.customModelSize || null;
+    const refAudioB64 = message.refAudioB64 || null;
+    const refText = message.refText || null;
+    const playbackRate =
+      Number.isFinite(Number(message.playbackRate)) && Number(message.playbackRate) > 0
+        ? Number(message.playbackRate)
+        : 1;
 
   state.requestId += 1;
   const requestId = state.requestId;
+  let stopped = false;
 
-  logInfo("runSpeak start", {
-    requestId,
-    tabId: tab.id,
-    url: tab.url,
-    source,
-    mode,
-    chunkSize,
-    playbackTarget,
-  });
+    logInfo("runSpeak start", {
+      requestId,
+      tabId: tab.id,
+      url: tab.url,
+      source,
+      mode,
+      chunkSize,
+      playbackTarget,
+      playbackRate,
+    });
 
   state.aborters.forEach((c) => c.abort());
   state.aborters = [];
 
   await ensureOffscreen();
   chrome.runtime.sendMessage({ type: "offscreen_stop" });
+  chrome.runtime.sendMessage({ type: "offscreen_reset", requestId });
 
   const rawText = await getTextFromTab(tab.id, source);
   const chunks = chunkText(rawText, chunkSize);
@@ -408,11 +422,11 @@ async function runSpeak(message, sender) {
     });
   }
 
-  chrome.runtime.sendMessage({
-    type: "progress",
-    stage: "start",
-    chunks: chunks.length,
-  });
+    chrome.runtime.sendMessage({
+      type: "progress",
+      stage: "start",
+      chunks: chunks.length,
+    });
 
   for (let i = 0; i < chunks.length; i += 1) {
     if (requestId !== state.requestId) break;
@@ -430,7 +444,26 @@ async function runSpeak(message, sender) {
       ref_text: refText,
     };
 
-    const audioBuf = await fetchAudio(serverUrl, payload, controller.signal);
+    let audioBuf;
+    try {
+      audioBuf = await fetchAudio(serverUrl, payload, controller.signal);
+    } catch (err) {
+      if (controller.signal.aborted || isAbortError(err)) {
+        logInfo("TTS fetch aborted", { requestId, index: i + 1 });
+        stopped = true;
+        break;
+      }
+      throw err;
+    }
+    const wavMeta = inspectWavHeader(audioBuf);
+    let chunkDurationSec = null;
+    if (wavMeta?.sampleRate && wavMeta?.dataSize && wavMeta?.channels && wavMeta?.bitsPerSample) {
+      const bytesPerSample = (wavMeta.bitsPerSample / 8) * wavMeta.channels;
+      const samples = bytesPerSample ? wavMeta.dataSize / bytesPerSample : 0;
+      if (samples > 0 && wavMeta.sampleRate > 0) {
+        chunkDurationSec = samples / wavMeta.sampleRate;
+      }
+    }
     logInfo("received audio bytes", audioBuf.byteLength);
     logAudioBufferMeta(audioBuf);
     const audioB64 = arrayBufferToBase64(audioBuf);
@@ -443,6 +476,9 @@ async function runSpeak(message, sender) {
           {
             type: "play_audio",
             audioB64,
+            playbackRate,
+            durationSec: chunkDurationSec,
+            requestId,
           },
           (response) => {
             const err = chrome.runtime.lastError;
@@ -464,6 +500,7 @@ async function runSpeak(message, sender) {
           stage: "chunk",
           index: i + 1,
           total: chunks.length,
+          durationSec: chunkDurationSec,
         });
         continue;
       }
@@ -473,6 +510,9 @@ async function runSpeak(message, sender) {
       {
         type: "offscreen_enqueue",
         audioB64,
+        playbackRate,
+        durationSec: chunkDurationSec,
+        requestId,
       },
       { retry: true }
     );
@@ -485,7 +525,14 @@ async function runSpeak(message, sender) {
       stage: "chunk",
       index: i + 1,
       total: chunks.length,
+      durationSec: chunkDurationSec,
     });
+  }
+
+  if (requestId !== state.requestId || stopped) {
+    chrome.runtime.sendMessage({ type: "progress", stage: "stopped" });
+    logInfo("runSpeak stopped", { requestId });
+    return;
   }
 
   chrome.runtime.sendMessage({ type: "progress", stage: "done" });
@@ -495,7 +542,9 @@ async function runSpeak(message, sender) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !message.type) return;
 
-  logInfo("onMessage", { type: message.type, fromTabId: sender?.tab?.id });
+  if (message.type !== "playback_progress") {
+    logInfo("onMessage", { type: message.type, fromTabId: sender?.tab?.id });
+  }
 
   if (message.type === "speak") {
     runSpeak(message, sender)
@@ -509,6 +558,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     state.aborters.forEach((c) => c.abort());
     state.aborters = [];
     logInfo("stop", { requestId: state.requestId });
+    chrome.runtime.sendMessage({ type: "progress", stage: "stopped" });
     ensureOffscreen().then(() => {
       chrome.runtime.sendMessage({ type: "offscreen_stop" });
     });
@@ -521,6 +571,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       chrome.runtime.sendMessage({ type: "offscreen_pause" });
     });
     logInfo("pause");
+    sendResponse({ ok: true });
+    return;
+  }
+
+  if (message.type === "set_playback_rate") {
+    const rate =
+      Number.isFinite(Number(message.rate)) && Number(message.rate) > 0
+        ? Number(message.rate)
+        : 1;
+    ensureOffscreen().then(() => {
+      chrome.runtime.sendMessage({ type: "offscreen_set_rate", rate });
+    });
+    logInfo("set playback rate", { rate });
     sendResponse({ ok: true });
     return;
   }

@@ -104,12 +104,55 @@ class AudioQueue {
     this.current = null;
     this.currentUrl = null;
     this.paused = false;
+    this.playbackRate = 1;
+    this.totalDurationSec = 0;
+    this.playedDurationSec = 0;
+    this.currentDurationSec = 0;
+    this.lastProgressSentAt = 0;
+    this.requestId = null;
   }
 
-  enqueue(audioBuffer) {
+  _emitProgress(state = null, force = false) {
+    const now = Date.now();
+    if (!force && now - this.lastProgressSentAt < 200) return;
+    this.lastProgressSentAt = now;
+    const currentTime = this.current ? this.current.currentTime || 0 : 0;
+    const playedSec = this.playedDurationSec + currentTime;
+    const totalSec = this.totalDurationSec;
+    const resolvedState =
+      state || (this.paused ? "paused" : this.current ? "playing" : "idle");
+    chrome.runtime.sendMessage({
+      type: "playback_progress",
+      playedSec,
+      totalSec,
+      state: resolvedState,
+      requestId: this.requestId,
+    });
+  }
+
+  reset(requestId = null) {
+    this.stop();
+    this.totalDurationSec = 0;
+    this.playedDurationSec = 0;
+    this.currentDurationSec = 0;
+    this.requestId = requestId;
+    this._emitProgress("idle", true);
+  }
+
+  enqueue(audioBuffer, playbackRate = null, durationSec = null, requestId = null) {
     logAudioBufferMeta(audioBuffer);
-    this.queue.push(audioBuffer);
+    const rate = playbackRate ?? this.playbackRate;
+    if (requestId && this.requestId && requestId !== this.requestId) {
+      this.reset(requestId);
+    } else if (requestId) {
+      this.requestId = requestId;
+    }
+    if (Number.isFinite(durationSec) && durationSec > 0) {
+      this.totalDurationSec += durationSec;
+    }
+    this.queue.push({ buffer: audioBuffer, playbackRate: rate, durationSec: durationSec || 0 });
     logInfo("queue length", this.queue.length);
+    this._emitProgress("buffering", true);
     if (!this.current && !this.paused) {
       this._playNext();
     }
@@ -117,29 +160,46 @@ class AudioQueue {
 
   async _playNext() {
     if (this.queue.length === 0 || this.paused) {
+      if (!this.current) {
+        const isComplete =
+          this.totalDurationSec > 0 && this.playedDurationSec >= this.totalDurationSec - 0.05;
+        const state = this.paused ? "paused" : isComplete ? "done" : "idle";
+        this._emitProgress(state, true);
+      }
       return;
     }
 
-    const buffer = this.queue.shift();
+    const item = this.queue.shift();
+    const buffer = item?.buffer || item;
+    const rate = item?.playbackRate || this.playbackRate || 1;
+    const durationSec = item?.durationSec || 0;
     const blob = new Blob([buffer], { type: "audio/wav" });
     const url = URL.createObjectURL(blob);
     const audio = new Audio();
     audio.src = url;
     audio.preload = "auto";
+    audio.playbackRate = rate;
     logInfo("audio element created", {
       canPlayWav: audio.canPlayType("audio/wav"),
       canPlayPcm: audio.canPlayType("audio/wav; codecs=1"),
       blobSize: blob.size,
       blobType: blob.type,
+      playbackRate: rate,
     });
     attachAudioDebug(audio);
 
     this.current = audio;
     this.currentUrl = url;
+    this.currentDurationSec = durationSec;
 
     audio.onended = () => {
+      const finished = Number.isFinite(audio.duration) ? audio.duration : this.currentDurationSec;
+      if (finished > 0) {
+        this.playedDurationSec += finished;
+      }
       if (this.current === audio) {
         this._cleanupCurrent();
+        this._emitProgress("buffering", true);
         this._playNext();
       }
     };
@@ -152,11 +212,16 @@ class AudioQueue {
       }
     };
 
+    audio.ontimeupdate = () => {
+      this._emitProgress();
+    };
+
     try {
       const playPromise = audio.play();
       logInfo("audio play called", { promise: Boolean(playPromise) });
       await playPromise;
       logInfo("audio play resolved", { duration: audio.duration || null });
+      this._emitProgress("playing", true);
     } catch (err) {
       logError("audio play failed", err?.message || String(err));
       if (this.current === audio) {
@@ -170,6 +235,7 @@ class AudioQueue {
     if (this.current) {
       this.current.onended = null;
       this.current.onerror = null;
+      this.current.ontimeupdate = null;
     }
     if (this.currentUrl) {
       URL.revokeObjectURL(this.currentUrl);
@@ -189,6 +255,10 @@ class AudioQueue {
       }
       this._cleanupCurrent();
     }
+    this.totalDurationSec = 0;
+    this.playedDurationSec = 0;
+    this.currentDurationSec = 0;
+    this._emitProgress("stopped", true);
   }
 
   pause() {
@@ -200,17 +270,37 @@ class AudioQueue {
         // ignore
       }
     }
+    this._emitProgress("paused", true);
   }
 
   resume() {
     this.paused = false;
     if (this.current) {
+      this.current.playbackRate = this.playbackRate || 1;
       this.current.play().catch((err) => {
         logError("audio resume failed", err?.message || String(err));
       });
+      this._emitProgress("playing", true);
       return;
     }
     this._playNext();
+  }
+
+  setPlaybackRate(rate) {
+    const normalized = Number(rate);
+    if (!Number.isFinite(normalized) || normalized <= 0) return;
+    this.playbackRate = normalized;
+    this.queue = this.queue.map((item) => ({
+      buffer: item?.buffer || item,
+      playbackRate: normalized,
+    }));
+    if (this.current) {
+      try {
+        this.current.playbackRate = normalized;
+      } catch (_) {
+        // ignore
+      }
+    }
   }
 }
 
@@ -225,7 +315,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       logInfo("audio base64 length", message.audioB64.length);
       audioBuffer = base64ToArrayBuffer(message.audioB64);
     }
-    player.enqueue(audioBuffer);
+    player.enqueue(
+      audioBuffer,
+      message.playbackRate,
+      Number(message.durationSec) || null,
+      message.requestId || null
+    );
+    sendResponse({ ok: true });
+    return;
+  }
+
+  if (message.type === "offscreen_reset") {
+    player.reset(message.requestId || null);
     sendResponse({ ok: true });
     return;
   }
@@ -244,6 +345,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message.type === "offscreen_resume") {
     player.resume();
+    sendResponse({ ok: true });
+    return;
+  }
+
+  if (message.type === "offscreen_set_rate") {
+    player.setPlaybackRate(message.rate);
     sendResponse({ ok: true });
     return;
   }
