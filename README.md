@@ -1,154 +1,57 @@
-# Webpage TTS (MLX Qwen3)
+# Webpage TTS
 
-A local TTS server + a Chromium extension that reads selected text or pages aloud using MLX Qwen3-TTS (Apple Silicon optimized).
+Local page/selection text-to-speech with a Chromium extension + FastAPI backend (MLX Qwen3-TTS).
+
+A simple (lamely named) repo that keeps me engaged/up to date on my reading lists/blog reading that I will probably never get to otherwise.
+
+This repo is also an experiment in what gpt-5.2-codex does if given not really much structure at all and just told in pretty vague words. Local model server instructions was given properly but the AGENTS/chrome extension etc was pretty much fully up to the agent. Sometimes it was pretty frustrating
+
+UI does look ugly and probably should be revised with Claude + frontend skill
+
+## What this project does
+- Runs a local TTS server on your machine.
+- Adds a browser side panel to read selected text or full pages aloud.
+- Supports Custom Voice, Voice Design, and Voice Clone modes.
 
 ## Requirements
-- macOS (Apple Silicon recommended for MLX)
+- macOS (Apple Silicon recommended)
 - Python 3.12
 - `uv`
+- Chrome/Chromium
 
-## Setup
+## Quick start
 ```bash
 uv venv --python 3.12
 source .venv/bin/activate
 uv pip install -r requirements.txt
-```
-
-## Run the server
-```bash
 uv run python main.py
 ```
 
-Server defaults:
-- Host: `127.0.0.1`
-- Port: `9872`
+Server default: `http://127.0.0.1:9872`
 
-Environment variables:
-- `TTS_HOST=127.0.0.1`
-- `TTS_PORT=9872`
-- `TTS_DEFAULT_SPEAKER=Vivian`
-- `MLX_CUSTOM_VOICE_MODEL=mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit`
-- `MLX_VOICE_DESIGN_MODEL=mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit`
-- `MLX_VOICE_CLONE_MODEL=mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit`
-- `HF_HUB_ENABLE_XET=1` (faster downloads)
-- `HF_HUB_ENABLE_HF_TRANSFER=1` (optional speed-up)
-
-Notes:
-- MLX-only (no Torch/Qwen runtime).
-- English-only is enforced at the server level (no language selector).
-
-## Models (Qwen3-TTS family)
-Use these to pick the right model for each mode.
-
-**Model roles**
-- **VoiceDesign**: create a brand-new voice from a natural-language description.
-- **CustomVoice**: use preset timbres; instruction control is available on the 1.7B model.
-- **Base**: voice cloning from short reference audio (used for cloning and fine-tuning).
-
-**Sizes**
-- **1.7B**: peak performance and control.
-- **0.6B**: balance of performance and efficiency.
-
-## MLX CLI quick test
-```bash
-python -m mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit --text "Hello, this is a test."
-```
-
-Python example:
-```python
-from mlx_audio.tts.utils import load_model
-from mlx_audio.tts.generate import generate_audio
-
-model = load_model("mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit")
-generate_audio(
-    model=model,
-    text="Hello, this is a test.",
-    ref_audio="path_to_audio.wav",
-    file_prefix="test_audio",
-)
-```
-
-## Chrome extension
+## Load extension
 1. Open `chrome://extensions`.
-2. Enable **Developer mode**.
-3. Click **Load unpacked** and select `chrome_extension`.
-4. Click the extension icon to open the right-hand side panel.
-5. If you update extension files, click **Reload** for the extension in `chrome://extensions`.
-6. Optional: set the extension **Site access** to “On all sites” if you see “Receiving end does not exist”.
+2. Enable Developer mode.
+3. Click Load unpacked and choose `chrome_extension/`.
+4. Open the side panel and click Speak.
 
-### How to use
-- **Default**: uses the server’s default speaker.
-- **Custom Voices**: choose a speaker + optional style instruction.
-- **Voice Design**: provide a voice description; optionally save it.
-- **Voice Clone**: upload a reference audio clip, provide its transcript, optionally save it.
-- **Test Tone**: plays a short 440Hz beep to confirm audio output from the popup.
-- **Test TTS (MLX)**: fetches a short hardcoded phrase from the MLX backend to verify end-to-end audio output.
+## Voice modes
+- `custom`: built-in speakers + optional style instruction
+- `design`: create a voice from a text prompt
+- `clone`: reference audio + reference text
 
-## Local MLX test (loop-until-pass)
-This script runs a local MLX synthesis loop and keeps retrying until it gets non‑silent audio.
-```bash
-uv run python scripts/test_mlx_tts.py
-```
-To stop after N tries:
-```bash
-uv run python scripts/test_mlx_tts.py --max-attempts 5
-```
-Each attempt has a hard 120s timeout (override with `--timeout`).
-
-### Tips
-- Voice design requires the MLX VoiceDesign model.
-- Voice cloning requires the MLX Base model and a reference transcript.
-
-## Endpoints
+## API endpoints
 - `GET /health`
 - `GET /capabilities`
 - `GET /speakers`
 - `POST /tts`
 
-## Notes & troubleshooting
-- MLX runs on Apple Metal (no CPU fallback). Expect large models to take significant memory.
-- Voice Design needs the VoiceDesign model; Voice Clone needs reference audio + transcript.
-- The speaker list is fixed to the CustomVoice speaker set.
-- If you see “Receiving end does not exist,” open a normal webpage (not Chrome internal pages) and try again.
+## Common env vars
+- `TTS_HOST`, `TTS_PORT`, `TTS_DEFAULT_SPEAKER`, `TTS_LOG_LEVEL`
+- `MLX_CUSTOM_VOICE_MODEL_SMALL`, `MLX_CUSTOM_VOICE_MODEL_LARGE`
+- `MLX_CUSTOM_VOICE_DEFAULT_SIZE`, `MLX_VOICE_DESIGN_MODEL`, `MLX_VOICE_CLONE_MODEL`
 
-## Caching & re-downloads
-Hugging Face downloads are cached. If you’re seeing re-downloads, set a stable cache path:
-
+## Quick sanity test
 ```bash
-export HF_HOME=~/.cache/huggingface
-export HF_HUB_ENABLE_XET=1
-export HF_HUB_ENABLE_HF_TRANSFER=1
-```
-
-If you want to force `hf_transfer` usage, install its extra:
-```bash
-uv pip install "huggingface_hub[hf_transfer]"
-```
-
-You can also bypass cache entirely by using local model paths (see Offline model downloads below).
-
-## Offline model downloads (Hugging Face CLI)
-If you want to download models ahead of time and run fully offline:
-
-```bash
-uv pip install -r requirements.txt
-uv run huggingface-cli login
-uv run huggingface-cli download mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit --local-dir ./models/mlx-customvoice --local-dir-use-symlinks False
-uv run huggingface-cli download mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit --local-dir ./models/mlx-voicedesign --local-dir-use-symlinks False
-uv run huggingface-cli download mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit --local-dir ./models/mlx-base --local-dir-use-symlinks False
-```
-
-Then point your env vars to local paths:
-```bash
-export MLX_CUSTOM_VOICE_MODEL=./models/mlx-customvoice
-export MLX_VOICE_DESIGN_MODEL=./models/mlx-voicedesign
-export MLX_VOICE_CLONE_MODEL=./models/mlx-base
-```
-
-## Project layout
-```
-chrome_extension/   # Chromium extension (popup UI + background + content script)
-main.py             # Launches the local server
-requirements.txt
-tts_server/         # FastAPI app + backends
+.venv/bin/python scripts/test_mlx_tts.py --max-attempts 1
 ```
