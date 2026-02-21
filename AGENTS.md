@@ -38,7 +38,7 @@
 
 ## Configuration & Runtime Notes
 - Backend standard: use MLX for local inference/runtime behavior.
-- Do not use Elm Studio in this repository; it is no longer part of the backend path.
+- Do not use LM Studio in this repository; it is no longer part of the backend path.
 
 ## Long-Running Commands
 - For long-running downloads/builds/tests, always run unbuffered output and pipe through `tee` so progress is visible live and persisted to a log file.
