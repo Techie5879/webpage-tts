@@ -2,3 +2,7 @@
 !.venv/**
 !.cursor
 !.cursor/**
+!llama.cpp
+!llama.cpp/**
+!*.log
+!**/*.log

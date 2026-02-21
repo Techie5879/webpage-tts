@@ -3,10 +3,18 @@ from __future__ import annotations
 import argparse
 import os
 import signal
+import sys
 import time
+from pathlib import Path
 
 import numpy as np
 from loguru import logger
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tts_server.config import MODEL_IDS, apply_runtime_env, ensure_runtime_dirs, model_local_dir
 
 
 class TimeoutError(Exception):
@@ -18,15 +26,16 @@ def _alarm_handler(_signum, _frame):
 
 
 def main() -> None:
+    apply_runtime_env()
+    ensure_runtime_dirs()
+    default_model_path = str(model_local_dir(MODEL_IDS["custom_small"]))
+
     parser = argparse.ArgumentParser(description="Loop until MLX TTS succeeds.")
     parser.add_argument(
         "--model",
         type=str,
-        default=os.getenv(
-            "MLX_CUSTOM_VOICE_MODEL",
-            "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit",
-        ),
-        help="MLX model path or repo id.",
+        default=os.getenv("MLX_CUSTOM_VOICE_MODEL", default_model_path),
+        help="MLX model local path.",
     )
     parser.add_argument(
         "--voice",
@@ -64,16 +73,6 @@ def main() -> None:
             from mlx_audio.tts.utils import load_model
 
             model = load_model(args.model)
-            if getattr(model, "tokenizer", None) is not None:
-                from transformers import AutoTokenizer
-
-                tokenizer_name = getattr(
-                    getattr(model, "config", None), "tokenizer_name", None
-                )
-                if tokenizer_name:
-                    model.tokenizer = AutoTokenizer.from_pretrained(
-                        tokenizer_name, fix_mistral_regex=True
-                    )
             results = list(
                 model.generate(
                     text=args.text,

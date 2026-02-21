@@ -2,29 +2,40 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import struct
+import threading
+import time
+from pathlib import Path
 from typing import Dict, Literal, Optional, Tuple
 
 import numpy as np
 import soundfile as sf
+from dotenv import find_dotenv, load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
+from huggingface_hub import snapshot_download
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from .config import Settings
+from .config import (
+    DEFAULT_CUSTOM_MODEL_SIZE,
+    DEFAULT_SPEAKER,
+    HF_HUB_CACHE_DIR,
+    MODEL_IDS,
+    RUNTIME_DIR,
+    apply_runtime_env,
+    ensure_runtime_dirs,
+    model_local_dir,
+)
 from .constants import DEFAULT_CUSTOMVOICE_SPEAKERS
 
-settings = Settings()
-logger.info(
-    "Config: backend=mlx, mlx_custom={}, mlx_design={}, mlx_clone={}",
-    settings.mlx_custom_voice_model_small,
-    settings.mlx_voice_design_model,
-    settings.mlx_voice_clone_model,
-)
+load_dotenv(dotenv_path=find_dotenv(usecwd=True), override=False)
+apply_runtime_env()
+ensure_runtime_dirs()
 
-app = FastAPI(title="Webpage TTS Server", version="0.1.0")
+app = FastAPI(title="Webpage TTS Server", version="0.2.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -38,6 +49,21 @@ ModeName = Literal["default", "custom", "design", "clone"]
 
 _mlx_models: Dict[str, object] = {}
 _request_counter = 0
+_download_lock = threading.Lock()
+_startup_manifest_path = RUNTIME_DIR / "model_manifest.json"
+_startup_state: Dict[str, object] = {
+    "stage": "idle",
+    "started_at": None,
+    "finished_at": None,
+    "current": None,
+    "total": len(MODEL_IDS),
+    "completed": 0,
+    "errors": [],
+}
+
+
+def _set_startup_state(**kwargs: object) -> None:
+    _startup_state.update(kwargs)
 
 
 def _wav_header_info(data: bytes) -> Dict[str, object]:
@@ -89,10 +115,139 @@ class TTSRequest(BaseModel):
     max_new_tokens: Optional[int] = None
 
 
+def _manifest_payload() -> Dict[str, object]:
+    entries = {}
+    for key, model_id in MODEL_IDS.items():
+        entries[key] = {
+            "model_id": model_id,
+            "local_dir": str(model_local_dir(model_id)),
+            "exists": model_local_dir(model_id).exists(),
+        }
+    return {
+        "generated_at": int(time.time()),
+        "models": entries,
+    }
+
+
+def _write_manifest() -> None:
+    _startup_manifest_path.write_text(
+        json.dumps(_manifest_payload(), indent=2),
+        encoding="utf-8",
+    )
+
+
+def _download_model(model_key: str, model_id: str) -> Path:
+    local_dir = model_local_dir(model_id)
+    local_dir.mkdir(parents=True, exist_ok=True)
+
+    has_config = (local_dir / "config.json").exists()
+    has_weights = any(local_dir.glob("*.safetensors"))
+    if has_config and has_weights:
+        logger.info("Model {} already present at {}", model_id, local_dir)
+        return local_dir
+
+    logger.info(
+        "Downloading model {} ({}) to {}",
+        model_key,
+        model_id,
+        local_dir,
+    )
+    start = time.time()
+    snapshot_download(
+        repo_id=model_id,
+        local_dir=local_dir,
+        cache_dir=HF_HUB_CACHE_DIR,
+        allow_patterns=[
+            "*.json",
+            "*.safetensors",
+            "*.py",
+            "*.model",
+            "*.tiktoken",
+            "*.txt",
+            "*.jsonl",
+            "*.yaml",
+            "*.wav",
+            "*.pth",
+            "*.npz",
+            "*.bin",
+            "*.md",
+            "*tokenizer*",
+            "speech_tokenizer/*",
+        ],
+        max_workers=8,
+    )
+
+    took = round(time.time() - start, 2)
+    logger.info(
+        "Downloaded model {} in {}s -> {}",
+        model_id,
+        took,
+        local_dir,
+    )
+    return local_dir
+
+
+def prefetch_all_models() -> None:
+    with _download_lock:
+        _set_startup_state(
+            stage="downloading",
+            started_at=int(time.time()),
+            finished_at=None,
+            current=None,
+            total=len(MODEL_IDS),
+            completed=0,
+            errors=[],
+        )
+        try:
+            completed = 0
+            for model_key, model_id in MODEL_IDS.items():
+                _set_startup_state(current={"key": model_key, "model_id": model_id})
+                _download_model(model_key, model_id)
+                completed += 1
+                _set_startup_state(completed=completed)
+
+            _write_manifest()
+            _set_startup_state(
+                stage="ready",
+                finished_at=int(time.time()),
+                current=None,
+            )
+            logger.info("All required models are ready")
+        except Exception as exc:
+            logger.exception("Model prefetch failed")
+            _set_startup_state(
+                stage="error",
+                finished_at=int(time.time()),
+                errors=[str(exc)],
+            )
+            raise
+
+
 def _decode_b64_audio(b64_str: str) -> bytes:
     if b64_str.startswith("data:"):
         b64_str = b64_str.split(",", 1)[1]
     return base64.b64decode(b64_str)
+
+
+def _resolve_model_id(req: TTSRequest) -> str:
+    if req.mode in {"default", "custom"}:
+        size = (req.custom_model_size or DEFAULT_CUSTOM_MODEL_SIZE).lower().strip()
+        if size == "0.6b":
+            return MODEL_IDS["custom_small"]
+        if size == "1.7b":
+            return MODEL_IDS["custom_large"]
+        raise HTTPException(status_code=400, detail="custom_model_size must be 0.6b or 1.7b")
+
+    if req.mode == "design":
+        if not req.instruction:
+            raise HTTPException(status_code=400, detail="instruction is required for voice design")
+        return MODEL_IDS["design"]
+
+    if not req.ref_audio_b64:
+        raise HTTPException(status_code=400, detail="ref_audio_b64 is required for voice cloning")
+    if not req.ref_text:
+        raise HTTPException(status_code=400, detail="ref_text is required for voice cloning")
+    return MODEL_IDS["clone"]
 
 
 def _get_mlx_model(model_id: str):
@@ -101,17 +256,13 @@ def _get_mlx_model(model_id: str):
         return _mlx_models[model_id]
 
     from mlx_audio.tts.utils import load_model
-    from transformers import AutoTokenizer
 
-    logger.info("Loading MLX model: {}", model_id)
-    model = load_model(model_id)
-    if getattr(model, "tokenizer", None) is not None:
-        tokenizer_name = getattr(getattr(model, "config", None), "tokenizer_name", None)
-        if tokenizer_name:
-            model.tokenizer = AutoTokenizer.from_pretrained(
-                tokenizer_name, fix_mistral_regex=True
-            )
-            logger.info("Reloaded tokenizer with fix_mistral_regex=True")
+    model_path = model_local_dir(model_id)
+    if not model_path.exists():
+        raise RuntimeError(f"Model path is missing: {model_path}")
+
+    logger.info("Loading MLX model from {}", model_path)
+    model = load_model(model_path)
     _mlx_models[model_id] = model
     return model
 
@@ -165,56 +316,15 @@ def _read_ref_audio_mlx(model, b64: str) -> Tuple["mx.array", int]:
 
 def _synthesize_mlx(req: TTSRequest) -> Tuple[np.ndarray, int]:
     logger.info("MLX synth: mode={} text_len={}", req.mode, len(req.text))
-
-    if req.mode in {"default", "custom"}:
-        size = (req.custom_model_size or settings.mlx_custom_voice_default_size).lower()
-        if size in {"1.7b", "1.7", "large"}:
-            model_id = settings.mlx_custom_voice_model_large
-        else:
-            model_id = settings.mlx_custom_voice_model_small
-    elif req.mode == "design":
-        if not settings.mlx_voice_design_model:
-            logger.warning("MLX voice design model not configured")
-            raise HTTPException(
-                status_code=400,
-                detail="MLX voice design model not configured.",
-            )
-        model_id = settings.mlx_voice_design_model
-        if not req.instruction:
-            logger.warning("MLX design missing instruction")
-            raise HTTPException(
-                status_code=400,
-                detail="instruction is required for voice design.",
-            )
-    else:
-        if not settings.mlx_voice_clone_model:
-            logger.warning("MLX voice clone model not configured")
-            raise HTTPException(
-                status_code=400,
-                detail="MLX voice clone model not configured.",
-            )
-        model_id = settings.mlx_voice_clone_model
-        if not req.ref_audio_b64:
-            logger.warning("MLX clone missing ref_audio_b64")
-            raise HTTPException(
-                status_code=400,
-                detail="ref_audio_b64 is required for voice cloning.",
-            )
-        if not req.ref_text:
-            logger.warning("MLX clone missing ref_text")
-            raise HTTPException(
-                status_code=400,
-                detail="ref_text is required for voice cloning (STT disabled).",
-            )
-
+    model_id = _resolve_model_id(req)
     model = _get_mlx_model(model_id)
-    voice = req.speaker or settings.default_speaker
+    voice = req.speaker or DEFAULT_SPEAKER
     logger.info("MLX model selected: {} voice={}", model_id, voice)
 
     ref_audio = None
     ref_text = None
     if req.mode == "clone":
-        ref_audio, _ = _read_ref_audio_mlx(model, req.ref_audio_b64)
+        ref_audio, _ = _read_ref_audio_mlx(model, req.ref_audio_b64 or "")
         ref_text = req.ref_text
         logger.info(
             "MLX clone reference loaded: ref_audio_samples={} ref_text_len={}",
@@ -249,19 +359,33 @@ def _synthesize_mlx(req: TTSRequest) -> Tuple[np.ndarray, int]:
     )
     audio_np = np.array(audio)
     sample_rate = results[0].sample_rate
-    logger.info("MLX audio dtype={}", audio_np.dtype)
     logger.info(
-        "MLX synth complete: segments={} sample_rate={}",
+        "MLX synth complete: segments={} sample_rate={} dtype={}",
         len(results),
         sample_rate,
+        audio_np.dtype,
     )
     _log_audio_stats(audio_np, sample_rate, "MLX")
     return audio_np, sample_rate
 
 
 @app.get("/health")
-def health() -> Dict[str, str]:
-    return {"status": "ok"}
+def health() -> Dict[str, object]:
+    return {
+        "status": "ok",
+        "startup": _startup_state,
+    }
+
+
+@app.get("/startup-status")
+def startup_status() -> Dict[str, object]:
+    return _startup_state
+
+
+@app.post("/prefetch")
+def prefetch_now() -> Dict[str, object]:
+    prefetch_all_models()
+    return {"ok": True, "startup": _startup_state}
 
 
 @app.get("/capabilities")
@@ -269,16 +393,15 @@ def capabilities() -> Dict[str, object]:
     return {
         "backend": "mlx",
         "modes": ["default", "custom", "design", "clone"],
+        "default_speaker": DEFAULT_SPEAKER,
+        "default_custom_model_size": DEFAULT_CUSTOM_MODEL_SIZE,
         "models": {
-            "mlx": {
-                "custom_voice": {
-                    "small": settings.mlx_custom_voice_model_small,
-                    "large": settings.mlx_custom_voice_model_large,
-                    "default_size": settings.mlx_custom_voice_default_size,
-                },
-                "voice_design": settings.mlx_voice_design_model,
-                "voice_clone": settings.mlx_voice_clone_model,
+            key: {
+                "model_id": model_id,
+                "local_dir": str(model_local_dir(model_id)),
+                "downloaded": model_local_dir(model_id).exists(),
             }
+            for key, model_id in MODEL_IDS.items()
         },
     }
 
@@ -293,6 +416,7 @@ def tts(req: TTSRequest) -> Response:
     global _request_counter
     _request_counter += 1
     req_id = _request_counter
+
     logger.info(
         "TTS request {}: backend={} mode={} text_len={} speaker={} instruction_len={} "
         "custom_model_size={} ref_audio={} ref_text={} speed={} temp={} top_p={} top_k={} max_new_tokens={}",
@@ -311,24 +435,21 @@ def tts(req: TTSRequest) -> Response:
         req.top_k,
         req.max_new_tokens,
     )
+
     if req.backend != "mlx":
-        logger.warning("TTS request {} rejected: backend {}", req_id, req.backend)
-        raise HTTPException(
-            status_code=400,
-            detail="Only MLX backend is supported.",
-        )
+        raise HTTPException(status_code=400, detail="Only MLX backend is supported")
 
     audio, sr = _synthesize_mlx(req)
     buf = io.BytesIO()
     sf.write(buf, audio, sr, format="WAV", subtype="PCM_16")
     wav_bytes = buf.getvalue()
-    header_info = _wav_header_info(wav_bytes)
+
     logger.info(
         "TTS response {}: bytes={} sample_rate={} subtype=PCM_16 header={}",
         req_id,
         len(wav_bytes),
         sr,
-        header_info,
+        _wav_header_info(wav_bytes),
     )
     return Response(
         content=wav_bytes,

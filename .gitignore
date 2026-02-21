@@ -1,3 +1,13 @@
 .venv
 __pycache__
 .cursor/
+llama.cpp/
+.env
+.hf/
+models/
+logs/
+runtime/
+*.log
+prefetch-*.log
+*-integration.log
+mlx-test.log
