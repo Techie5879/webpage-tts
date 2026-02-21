@@ -4,9 +4,13 @@ Local page/selection text-to-speech with a Chromium extension + FastAPI backend 
 
 A simple (lamely named) repo that keeps me engaged/up to date on my reading lists/blog reading that I will probably never get to otherwise.
 
-This repo is also an experiment in what gpt-5.2-codex does if given not really much structure at all and just told in pretty vague words. Local model server instructions was given properly but the AGENTS/chrome extension etc was pretty much fully up to the agent. Sometimes it was pretty frustrating
+This repo is also an experiment in what gpt-5.2-codex does if given not really much structure at all and just told in pretty vague words. Local model server instructions was given properly but the AGENTS/chrome extension etc was pretty much fully up to the agent. Sometimes it was pretty frustrating.
 
-UI does look ugly and probably should be revised with Claude + frontend skill
+EDIT: `d03de654c2cb5c8566e043fc28af16166f40f180` was the state of the repo where we did a very vague "codex just here's what I want and make this" because I was lazy. I realized I wanted this more than I thought - and thus the state that "just make this" was pretty unusable, unmaintainable, and ugly. 
+Workflow after the hash ^:
+Opus 4.6 plan -> Was pretty dogshit so I had to instruct it on how to not be completely stupid -> Composer 1.5 Implement -> Codex Deep-Dive + small nudges to implement and clean up -> Opus 4.6 Frontend Iteration
+
+This worked and I have something thats prettyyy nice now, maybe I'll even change the name to something that is not lame.
 
 ## What this project does
 - Runs a local TTS server on your machine.
