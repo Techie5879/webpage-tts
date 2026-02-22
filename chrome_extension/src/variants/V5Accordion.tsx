@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSettings, useSpeakers } from "@/SettingsContext";
 import { usePlaybackActions } from "@/hooks/usePlaybackActions";
 import { useVoiceActions } from "@/hooks/useVoiceActions";
@@ -23,6 +23,7 @@ import {
   Sun,
   Zap,
   Volume2,
+  Check,
 } from "lucide-react";
 import { formatClock } from "@/hooks/usePlaybackActions";
 
@@ -181,6 +182,18 @@ export default function V5Accordion() {
                   }}
                   className="mt-1.5 text-sm"
                 />
+                <div className="mt-1.5 flex items-center justify-between text-[11px]">
+                  {trimmedInstruction.length === 0 ? (
+                    <span className="text-muted-foreground/70">No style instruction set</span>
+                  ) : isStyleApplied ? (
+                    <span className="text-emerald-500">Applied to latest custom playback</span>
+                  ) : (
+                    <span className="text-amber-500">Updated. Press Speak to apply</span>
+                  )}
+                  {isStyleApplied && lastAppliedClock ? (
+                    <span className="text-muted-foreground/70">{lastAppliedClock}</span>
+                  ) : null}
+                </div>
               </div>
               <div>
                 <Label className="text-xs text-muted-foreground">Speaker</Label>
@@ -233,8 +246,18 @@ export default function V5Accordion() {
                   }}
                   className="h-9 text-sm flex-1"
                 />
-                <Button size="sm" onClick={voice.handleSaveDesign} className="h-9 text-sm">
-                  Save voice
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    voice.handleSaveDesign();
+                    flash(setFlashSaveDesign);
+                  }}
+                  className={cn(
+                    "h-9 text-sm gap-1.5 transition-colors duration-300",
+                    flashSaveDesign && "bg-emerald-600 hover:bg-emerald-600 text-white"
+                  )}
+                >
+                  {flashSaveDesign ? <><Check className="h-3.5 w-3.5" /> Saved</> : "Save voice"}
                 </Button>
               </div>
             </>
@@ -249,7 +272,6 @@ export default function V5Accordion() {
                   type="file"
                   accept="audio/*"
                   onChange={(e) => {
-                    setCloneFileName(e.target.files?.[0]?.name || "");
                     voice.handleCloneFileChange(e);
                   }}
                   className="hidden"
@@ -265,7 +287,7 @@ export default function V5Accordion() {
                     Choose file
                   </Button>
                   <span className="text-sm text-muted-foreground truncate">
-                    {cloneFileName || "No file chosen"}
+                    {state.cloneAudioName || "No file chosen"}
                   </span>
                 </div>
               </div>
@@ -297,10 +319,14 @@ export default function V5Accordion() {
                   onClick={() => {
                     const el = document.getElementById("v5-clone-audio") as HTMLInputElement;
                     voice.handleSaveClone(el?.files?.[0]);
+                    flash(setFlashSaveClone);
                   }}
-                  className="h-9 text-sm"
+                  className={cn(
+                    "h-9 text-sm gap-1.5 transition-colors duration-300",
+                    flashSaveClone && "bg-emerald-600 hover:bg-emerald-600 text-white"
+                  )}
                 >
-                  Save voice
+                  {flashSaveClone ? <><Check className="h-3.5 w-3.5" /> Saved</> : "Save voice"}
                 </Button>
               </div>
             </>
@@ -318,7 +344,7 @@ export default function V5Accordion() {
               type="text"
               value={state.serverUrl}
               onChange={(e) => {
-                const v = e.target.value.trim();
+                const v = e.target.value;
                 dispatch({ type: "SET_FIELD", field: "serverUrl", value: v });
                 saveFieldDebounced("serverUrl", v);
               }}
@@ -407,35 +433,58 @@ export default function V5Accordion() {
         {/* Saved voices section */}
         <SectionHeader title="Saved Voices" subtitle={`${state.savedVoices.length} saved`} />
         <div className="px-5 pb-5 pt-1 space-y-4">
-          <div className="flex gap-1.5">
-            <Select
-              value={voice.selectedVoiceId || "_empty"}
-              onValueChange={(v) => voice.setSelectedVoiceId(v === "_empty" ? "" : v)}
-            >
-              <SelectTrigger className="h-9 text-sm flex-1">
-                <SelectValue placeholder="Select voice" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="_empty">
-                  {state.savedVoices.length === 0 ? "No saved voices" : "Select a voice"}
-                </SelectItem>
-                {state.savedVoices.map((v) => (
-                  <SelectItem key={v.id} value={v.id}>
-                    {v.name} ({v.type})
+          <div className="flex items-center gap-1.5">
+            <div className="min-w-0 max-w-[220px] flex-1">
+              <Select
+                value={voice.selectedVoiceId || "_empty"}
+                onValueChange={(v) => voice.setSelectedVoiceId(v === "_empty" ? "" : v)}
+              >
+                <SelectTrigger className="h-8 text-sm">
+                  <SelectValue placeholder="Select voice" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="_empty">
+                    {state.savedVoices.length === 0 ? "No saved voices" : "Select a voice"}
                   </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Button size="sm" variant="outline" onClick={voice.handleApplyVoice} className="h-9 text-sm">
-              Apply
+                  {state.savedVoices.map((v) => (
+                    <SelectItem key={v.id} value={v.id}>
+                      {v.name} ({v.type})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                voice.handleApplyVoice();
+                if (voice.selectedVoiceId && voice.selectedVoiceId !== "_empty") {
+                  flash(setFlashApply);
+                }
+              }}
+              className={cn(
+                "h-8 px-2.5 text-xs gap-1 transition-colors duration-300",
+                flashApply && "border-emerald-600 bg-emerald-600/10 text-emerald-500"
+              )}
+            >
+              {flashApply ? <><Check className="h-3 w-3" /> Applied</> : "Apply"}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={voice.handleCloneSavedVoice}
+              className="h-8 px-2.5 text-xs"
+            >
+              Clone
             </Button>
             <Button
               size="sm"
               variant="outline"
               onClick={voice.handleRemoveVoice}
-              className="h-9 text-sm text-destructive"
+              className="h-8 px-2.5 text-xs text-destructive"
             >
-              Del
+              Delete
             </Button>
           </div>
         </div>
