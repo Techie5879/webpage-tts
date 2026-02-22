@@ -5,8 +5,11 @@ import io
 import sys
 import time
 
+import numpy as np
 import requests
+from scipy.signal import resample_poly
 import soundfile as sf
+import webrtcvad
 
 
 def _expect(cond: bool, message: str) -> None:
@@ -30,12 +33,31 @@ def _wait_startup_ready(server_url: str, timeout_sec: int) -> dict:
     raise RuntimeError(f"startup-status not ready after {timeout_sec}s: {last}")
 
 
+def _vad_ratio(audio: np.ndarray, sample_rate: int) -> float:
+    if audio.size == 0 or sample_rate <= 0:
+        return 0.0
+    vad = webrtcvad.Vad(2)
+    mono = audio.mean(axis=1) if audio.ndim > 1 else audio
+    speech_16k = resample_poly(mono, 16000, sample_rate).astype(np.float32)
+    speech_pcm = (np.clip(speech_16k, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
+    frame_bytes = 320
+    total_frames = 0
+    voiced_frames = 0
+    for i in range(0, len(speech_pcm) - frame_bytes + 1, frame_bytes):
+        total_frames += 1
+        if vad.is_speech(speech_pcm[i : i + frame_bytes], 16000):
+            voiced_frames += 1
+    return float(voiced_frames / total_frames) if total_frames else 0.0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate local TTS server end-to-end")
     parser.add_argument("--server-url", default="http://127.0.0.1:9872")
     parser.add_argument("--timeout", type=int, default=60)
     parser.add_argument("--wait-ready-seconds", type=int, default=120)
     parser.add_argument("--text", default="Hello. This is a local TTS API test.")
+    parser.add_argument("--min-rms", type=float, default=0.005)
+    parser.add_argument("--min-vad-ratio", type=float, default=0.1)
     args = parser.parse_args()
 
     server_url = args.server_url.rstrip("/")
@@ -75,8 +97,18 @@ def main() -> int:
     audio, sample_rate = sf.read(io.BytesIO(wav_bytes), dtype="float32")
     _expect(sample_rate > 0, f"invalid sample rate: {sample_rate}")
     _expect(audio.size > 0, "decoded audio is empty")
+    rms = float(np.sqrt(np.mean(np.square(audio)))) if audio.size else 0.0
+    vad_ratio = _vad_ratio(audio, int(sample_rate))
+    _expect(rms >= args.min_rms, f"audio rms too low: {rms:.8f} < {args.min_rms:.8f}")
+    _expect(
+        vad_ratio >= args.min_vad_ratio,
+        f"audio voiced ratio too low: {vad_ratio:.4f} < {args.min_vad_ratio:.4f}",
+    )
 
-    print(f"[ok] /tts bytes={len(wav_bytes)} sample_rate={sample_rate} samples={audio.size}")
+    print(
+        f"[ok] /tts bytes={len(wav_bytes)} sample_rate={sample_rate} samples={audio.size} "
+        f"rms={rms:.6f} vad_ratio={vad_ratio:.3f}"
+    )
     return 0
 
 

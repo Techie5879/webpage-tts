@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import platform
+import signal
 from typing import NoReturn
 
 import uvicorn
@@ -57,19 +58,59 @@ def _run_doctor(model_ids, models_dir, hf_home_dir, log_dir) -> int:
 
 
 def _run_serve(host: str, port: int, reload: bool) -> NoReturn:
-    from tts_server.app import prefetch_all_models
+    from tts_server.app import prefetch_all_models, request_shutdown
 
     logger.info("Prefetching all required models before server start")
     prefetch_all_models()
     logger.info("Starting uvicorn on {}:{}", host, port)
-    uvicorn.run(
+
+    if reload:
+        logger.warning("Running with --reload; custom signal handling disabled")
+        uvicorn.run(
+            "tts_server.app:app",
+            host=host,
+            port=port,
+            reload=True,
+            log_level="info",
+            log_config=None,
+        )
+        raise SystemExit(0)
+
+    config = uvicorn.Config(
         "tts_server.app:app",
         host=host,
         port=port,
-        reload=reload,
+        reload=False,
         log_level="info",
         log_config=None,
     )
+    server = uvicorn.Server(config)
+
+    signal_count = {"count": 0}
+    previous_handlers: dict[int, object] = {}
+
+    def _handle_signal(signum, _frame) -> None:
+        signal_count["count"] += 1
+        sig_name = signal.Signals(signum).name
+        logger.warning("Received {} (count={}), initiating graceful shutdown", sig_name, signal_count["count"])
+        request_shutdown()
+        server.should_exit = True
+        if signal_count["count"] >= 2:
+            logger.warning("Received second shutdown signal, forcing exit")
+            server.force_exit = True
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        previous_handlers[int(sig)] = signal.getsignal(sig)
+        signal.signal(sig, _handle_signal)
+
+    try:
+        server.run()
+    finally:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            previous = previous_handlers.get(int(sig))
+            if previous is not None:
+                signal.signal(sig, previous)
+
     raise SystemExit(0)
 
 

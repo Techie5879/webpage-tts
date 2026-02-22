@@ -126,6 +126,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       const message: BackgroundToSidebarMessage = rawMessage;
 
       if (message.type === "progress") {
+        console.log("[WebpageTTS] sidepanel progress message", message);
         if (message.stage === "start") {
           dispatch({ type: "SPEAK_START", totalChunks: message.chunks || 0 });
         } else if (message.stage === "chunk") {
@@ -142,6 +143,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       }
 
       if (message.type === "playback_progress") {
+        console.log("[WebpageTTS] sidepanel playback_progress", message);
         if (Number.isFinite(message.playedSec) || Number.isFinite(message.totalSec)) {
           dispatch({
             type: "PLAYBACK_PROGRESS",

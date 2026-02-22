@@ -37,10 +37,28 @@ chrome.runtime.onMessage.addListener(
 
     if (message.type === "get_text") {
       const source = message.source || "selection";
-      const text =
-        source === "page" ? getPageText() : getSelectionText() || getPageText();
-      console.log("[WebpageTTS] content get_text", source, text?.length || 0);
-      sendResponse({ text });
+      const selectionText = getSelectionText();
+      const pageText = getPageText();
+      const usedSource = source;
+      const text = usedSource === "selection" ? selectionText : pageText;
+      const response: GetTextResponse = {
+        text,
+        sourceUsed: usedSource,
+        selectionLen: selectionText.length,
+        pageLen: pageText.length,
+      };
+
+      console.log("[WebpageTTS] content get_text", {
+        requestedSource: source,
+        sourceUsed: usedSource,
+        selectionLen: selectionText.length,
+        pageLen: pageText.length,
+        resultLen: text.length,
+        selectionText,
+        pageText,
+        resultText: text,
+      });
+      sendResponse(response);
       return;
     }
   }

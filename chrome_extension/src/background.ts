@@ -3,8 +3,6 @@ import { arrayBufferToBase64, inspectWavHeader } from "@/lib/audio";
 import {
   type BackgroundToOffscreenMessage,
   type BasicResponse,
-  type ContentRequestMessage,
-  type GetTextResponse,
   isRuntimeMessage,
   isSidebarToBackgroundMessage,
   type ModelSize,
@@ -103,57 +101,50 @@ function isRestrictedUrl(url?: string): boolean {
   );
 }
 
-async function sendToTab(
+type ExtractedTextPayload = {
+  requestedSource: TextSource;
+  sourceUsed: TextSource;
+  selectionText: string;
+  pageText: string;
+  text: string;
+  selectionLen: number;
+  pageLen: number;
+};
+
+async function extractTextFromTab(
   tabId: number,
-  message: ContentRequestMessage
-): Promise<GetTextResponse | BasicResponse> {
-  return new Promise((resolve, reject) => {
-    chrome.tabs.sendMessage(tabId, message, (response) => {
-      const err = chrome.runtime.lastError;
-      if (err) {
-        logWarn("sendToTab error", err.message);
-        reject(new Error(err.message));
-        return;
-      }
-      resolve(response as GetTextResponse | BasicResponse);
-    });
-  });
-}
-
-async function ensureContentScript(tabId: number): Promise<void> {
-  try {
-    await sendToTab(tabId, { type: "ping" });
-    return;
-  } catch (err) {
-    const msg = String((err as Error)?.message || err);
-    if (!msg.includes("Receiving end does not exist")) {
-      throw err;
-    }
-  }
-
-  logInfo("content script missing, injecting");
-  const manifest = chrome.runtime.getManifest();
-  const contentScript = manifest.content_scripts?.[0]?.js?.[0];
-  const files = contentScript ? [contentScript] : ["src/content.ts"];
-  await chrome.scripting.executeScript({
+  source: TextSource
+): Promise<ExtractedTextPayload> {
+  const results = await chrome.scripting.executeScript({
     target: { tabId },
-    files,
-    injectImmediately: true,
+    args: [source],
+    func: (requestedSource: TextSource): ExtractedTextPayload => {
+      const selection = window.getSelection();
+      const selectionText = selection?.toString().trim() || "";
+      const pageText = document.body?.innerText?.trim() || "";
+      const sourceUsed: TextSource = requestedSource;
+      const text = sourceUsed === "selection" ? selectionText : pageText;
+
+      return {
+        requestedSource,
+        sourceUsed,
+        selectionText,
+        pageText,
+        text,
+        selectionLen: selectionText.length,
+        pageLen: pageText.length,
+      };
+    },
   });
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
-    try {
-      await sendToTab(tabId, { type: "ping" });
-      logInfo("content script injected");
-      return;
-    } catch (pingErr) {
-      logWarn("content script ping failed", {
-        attempt: attempt + 1,
-        error: (pingErr as Error)?.message || pingErr,
-      });
-    }
+
+  if (!results.length) {
+    throw new Error("No executeScript result returned");
   }
-  throw new Error("Content script injection failed");
+  const payload = results[0].result as ExtractedTextPayload | undefined;
+  if (!payload) {
+    throw new Error("executeScript returned empty payload");
+  }
+  return payload;
 }
 
 let offscreenReady = false;
@@ -193,6 +184,14 @@ async function sendToOffscreen(
   { retry = true }: { retry?: boolean } = {}
 ): Promise<BasicResponse | null> {
   await ensureOffscreen();
+  logInfo("offscreen send", {
+    type: message.type,
+    requestId: "requestId" in message ? message.requestId ?? null : null,
+    durationSec: "durationSec" in message ? message.durationSec ?? null : null,
+    playbackRate: "playbackRate" in message ? message.playbackRate ?? null : null,
+    audioB64Len: "audioB64" in message && message.audioB64 ? message.audioB64.length : 0,
+    retry,
+  });
   return new Promise((resolve) => {
     chrome.runtime.sendMessage(message, async (response) => {
       const err = chrome.runtime.lastError;
@@ -234,26 +233,35 @@ async function sendToOffscreen(
 }
 
 async function getTextFromTab(tabId: number, source: TextSource): Promise<string> {
-  let response: GetTextResponse | BasicResponse;
+  let response: ExtractedTextPayload;
   try {
     const tab = await chrome.tabs.get(tabId);
     logInfo("getTextFromTab url", tab?.url);
     if (isRestrictedUrl(tab?.url)) {
       throw new Error("Restricted URL");
     }
-    await ensureContentScript(tabId);
-    response = await sendToTab(tabId, { type: "get_text", source });
+    response = await extractTextFromTab(tabId, source);
   } catch (err) {
     logError("getTextFromTab failed", err);
     throw new Error(
-      "Content script not available on this page. Open a normal webpage (not chrome://, file://, or the Web Store) and try again."
+      "Unable to read text from this page. Open a normal webpage (not chrome://, file://, or the Web Store) and try again."
     );
   }
-  if (!("text" in response) || !response.text) {
+  if (!response.text) {
     logWarn("getTextFromTab empty response", response);
-    throw new Error("No text found on page");
+    if (source === "selection") {
+      throw new Error("No selected text found on page");
+    }
+    throw new Error("No page text found on page");
   }
-  logInfo("getTextFromTab text length", response.text.length);
+  logInfo("getTextFromTab response", {
+    requestedSource: source,
+    sourceUsed: response.sourceUsed || null,
+    selectionLen: response.selectionLen ?? null,
+    pageLen: response.pageLen ?? null,
+    textLen: response.text.length,
+    text: response.text,
+  });
   return response.text;
 }
 
@@ -274,11 +282,15 @@ async function fetchAudio(
     serverUrl,
     mode: payload.mode,
     textLen: (payload.text as string)?.length || 0,
+    text: payload.text,
     speaker: payload.speaker || null,
     instructionLen: (payload.instruction as string)?.length || 0,
+    instruction: payload.instruction,
     customModelSize: payload.custom_model_size || null,
     hasRefAudio: Boolean(payload.ref_audio_b64),
+    refAudioB64Len: payload.ref_audio_b64 ? payload.ref_audio_b64.length : 0,
     hasRefText: Boolean(payload.ref_text),
+    refText: payload.ref_text,
   });
   const startedAt = Date.now();
   const res = await fetch(`${serverUrl}/tts`, {
@@ -334,11 +346,17 @@ async function runSpeak(
     requestId,
     tabId: tab.id,
     url: tab.url,
+    serverUrl,
     source,
     mode,
     chunkSize,
     playbackTarget,
     playbackRate,
+    speaker,
+    instruction,
+    customModelSize,
+    refAudioB64Len: refAudioB64 ? refAudioB64.length : 0,
+    refText,
   });
 
   state.aborters.forEach((c) => c.abort());
@@ -354,8 +372,19 @@ async function runSpeak(
   chrome.runtime.sendMessage(offscreenResetMessage);
 
   const rawText = await getTextFromTab(tab.id, source);
+  logInfo("runSpeak raw text", {
+    requestId,
+    source,
+    textLen: rawText.length,
+    text: rawText,
+  });
   const chunks = chunkText(rawText, chunkSize);
-  logInfo("chunks", chunks.length);
+  logInfo("runSpeak chunks", {
+    requestId,
+    chunkCount: chunks.length,
+    chunkSize,
+    chunks,
+  });
 
   const startProgress: ProgressMessage = {
     type: "progress",
@@ -379,6 +408,12 @@ async function runSpeak(
       ref_audio_b64: refAudioB64,
       ref_text: refText,
     };
+    logInfo("runSpeak chunk payload", {
+      requestId,
+      index: i + 1,
+      total: chunks.length,
+      payload,
+    });
 
     let audioBuf: ArrayBuffer;
     try {
@@ -408,12 +443,18 @@ async function runSpeak(
         chunkDurationSec = samples / (wavMeta.sampleRate || 1);
       }
     }
-    logInfo("received audio bytes", audioBuf.byteLength);
+    logInfo("received audio", {
+      requestId,
+      index: i + 1,
+      audioBytes: audioBuf.byteLength,
+      wavMeta,
+      chunkDurationSec,
+    });
     const audioB64 = arrayBufferToBase64(audioBuf);
 
     if (requestId !== state.requestId) break;
 
-    await sendToOffscreen(
+    const offscreenResponse = await sendToOffscreen(
       {
         type: "offscreen_enqueue",
         audioB64,
@@ -423,6 +464,11 @@ async function runSpeak(
       },
       { retry: true }
     );
+    logInfo("offscreen enqueue response", {
+      requestId,
+      index: i + 1,
+      response: offscreenResponse,
+    });
 
     const chunkProgress: ProgressMessage = {
       type: "progress",

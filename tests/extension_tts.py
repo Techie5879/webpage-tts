@@ -13,7 +13,9 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 import requests
+from scipy.signal import resample_poly
 import soundfile as sf
+import webrtcvad
 
 try:
     import sounddevice as sd
@@ -123,6 +125,25 @@ def decode_wav(audio_bytes: bytes) -> Tuple[np.ndarray, int]:
     return audio, sr
 
 
+def audio_quality(audio: np.ndarray, sample_rate: int) -> Tuple[float, float]:
+    rms = float(np.sqrt(np.mean(np.square(audio)))) if audio.size else 0.0
+    if audio.size == 0 or sample_rate <= 0:
+        return rms, 0.0
+    vad = webrtcvad.Vad(2)
+    mono = audio.mean(axis=1) if audio.ndim > 1 else audio
+    speech_16k = resample_poly(mono, 16000, sample_rate).astype(np.float32)
+    speech_pcm = (np.clip(speech_16k, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
+    frame_bytes = 320
+    total_frames = 0
+    voiced_frames = 0
+    for i in range(0, len(speech_pcm) - frame_bytes + 1, frame_bytes):
+        total_frames += 1
+        if vad.is_speech(speech_pcm[i : i + frame_bytes], 16000):
+            voiced_frames += 1
+    vad_ratio = float(voiced_frames / total_frames) if total_frames else 0.0
+    return rms, vad_ratio
+
+
 def play_audio(audio: np.ndarray, sr: int) -> None:
     if sd is None:
         raise RuntimeError("sounddevice is not available for playback")
@@ -201,7 +222,20 @@ def run_attempt(args) -> None:
         audio_bytes = res.content
         print(f"[test] received audio bytes {len(audio_bytes)}")
         audio, sr = decode_wav(audio_bytes)
-        print(f"[test] decoded audio chunk {idx}/{len(chunks)} sr={sr} samples={audio.shape[0]}")
+        rms, vad_ratio = audio_quality(audio, sr)
+        if audio.size == 0:
+            raise RuntimeError("decoded audio is empty")
+        if rms < args.min_rms:
+            raise RuntimeError(f"audio rms too low: {rms:.8f} < {args.min_rms:.8f}")
+        if vad_ratio < args.min_vad_ratio:
+            raise RuntimeError(
+                f"audio voiced ratio too low: {vad_ratio:.4f} < {args.min_vad_ratio:.4f}"
+            )
+
+        print(
+            f"[test] decoded audio chunk {idx}/{len(chunks)} sr={sr} samples={audio.shape[0]} "
+            f"rms={rms:.6f} vad_ratio={vad_ratio:.3f}"
+        )
 
         if args.play:
             play_audio(audio, sr)
@@ -247,6 +281,8 @@ def main() -> int:
         default=120,
         help="Network timeout in seconds",
     )
+    parser.add_argument("--min-rms", type=float, default=0.005)
+    parser.add_argument("--min-vad-ratio", type=float, default=0.1)
     parser.add_argument(
         "--sleep-seconds",
         type=int,

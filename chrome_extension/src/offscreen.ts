@@ -26,6 +26,7 @@ function toPlaybackRuntimeState(state: string): PlaybackRuntimeState {
 }
 
 function emitProgress(data: { playedSec: number; totalSec: number; state: string }): void {
+  console.log("[WebpageTTS] offscreen emitProgress", data);
   const progressMessage: PlaybackProgressMessage = {
     type: "playback_progress",
     playedSec: data.playedSec,
@@ -53,6 +54,13 @@ chrome.runtime.onMessage.addListener(
       if (message.audioB64) {
         audioBuffer = base64ToArrayBuffer(message.audioB64);
       }
+      console.log("[WebpageTTS] offscreen enqueue", {
+        requestId: message.requestId ?? null,
+        durationSec: message.durationSec ?? null,
+        playbackRate: message.playbackRate ?? null,
+        audioB64Len: message.audioB64?.length || 0,
+        audioBytes: audioBuffer?.byteLength || 0,
+      });
       if (audioBuffer) {
         player.enqueue(
           audioBuffer,
@@ -66,30 +74,35 @@ chrome.runtime.onMessage.addListener(
     }
 
     if (message.type === "offscreen_reset") {
+      console.log("[WebpageTTS] offscreen reset", { requestId: message.requestId ?? null });
       player.reset(message.requestId ?? null);
       sendResponse({ ok: true });
       return;
     }
 
     if (message.type === "offscreen_stop") {
+      console.log("[WebpageTTS] offscreen stop");
       player.stop();
       sendResponse({ ok: true });
       return;
     }
 
     if (message.type === "offscreen_pause") {
+      console.log("[WebpageTTS] offscreen pause");
       player.pause();
       sendResponse({ ok: true });
       return;
     }
 
     if (message.type === "offscreen_resume") {
+      console.log("[WebpageTTS] offscreen resume");
       player.resume();
       sendResponse({ ok: true });
       return;
     }
 
     if (message.type === "offscreen_set_rate") {
+      console.log("[WebpageTTS] offscreen set rate", { rate: message.rate ?? 1 });
       player.setPlaybackRate(message.rate ?? 1);
       sendResponse({ ok: true });
       return;

@@ -16,7 +16,14 @@
 - `uv run python main.py prefetch`: Download required models into repo-local `models/mlx/`.
 - `uv run python main.py serve`: Start the MLX TTS server on `127.0.0.1:9872`.
 - `.venv/bin/python tests/mlx_tts.py --max-attempts 1`: Run backend TTS test with a hard 120s timeout per attempt.
+- `bun install` (inside `chrome_extension/`): Install extension dependencies.
+- `bun run dev` (inside `chrome_extension/`): Run extension dev workflow.
+- `bun run build` (inside `chrome_extension/`): Build extension production bundle.
 - Chrome extension: load `chrome_extension/` via `chrome://extensions` → “Load unpacked”. Reload after changes.
+
+## JavaScript Tooling Rule
+- Do not use `npm` commands in this repository.
+- Always use Bun for JS package management and scripts (`bun install`, `bun run ...`).
 
 ## Coding Style & Naming Conventions
 - Python: 4‑space indentation, snake_case for functions/vars.
@@ -27,6 +34,8 @@
 ## Testing Guidelines
 - No formal test suite. Use `tests/mlx_tts.py` for a quick backend sanity check.
 - Tests should be runnable from the repo root and use `.venv/bin/python` or `uv run`.
+- Any test that validates generated audio must enforce both RMS and VAD-based voiced-ratio checks (not just non-empty WAV output).
+- After completing any feature change (backend, frontend, or UI), rerun the relevant test suite/scripts before handing off. Do this once per completed change set, not after every small patch.
 
 ## Commit & Pull Request Guidelines
 - No commit message convention is defined in this repo. Use clear, imperative messages (e.g., “Add MLX test script”).

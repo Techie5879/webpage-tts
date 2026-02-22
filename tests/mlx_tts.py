@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 
 import numpy as np
+from scipy.signal import resample_poly
+import webrtcvad
 from loguru import logger
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +25,23 @@ class TimeoutError(Exception):
 
 def _alarm_handler(_signum, _frame):
     raise TimeoutError("Test exceeded timeout")
+
+
+def _vad_ratio(audio_np: np.ndarray, sample_rate: int) -> float:
+    if audio_np.size == 0 or sample_rate <= 0:
+        return 0.0
+    vad = webrtcvad.Vad(2)
+    mono = audio_np.mean(axis=1) if audio_np.ndim > 1 else audio_np
+    speech_16k = resample_poly(mono, 16000, sample_rate).astype(np.float32)
+    speech_pcm = (np.clip(speech_16k, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
+    frame_bytes = 320
+    total_frames = 0
+    voiced_frames = 0
+    for i in range(0, len(speech_pcm) - frame_bytes + 1, frame_bytes):
+        total_frames += 1
+        if vad.is_speech(speech_pcm[i : i + frame_bytes], 16000):
+            voiced_frames += 1
+    return float(voiced_frames / total_frames) if total_frames else 0.0
 
 
 def main() -> None:
@@ -51,6 +70,8 @@ def main() -> None:
     )
     parser.add_argument("--max-tokens", type=int, default=128)
     parser.add_argument("--speed", type=float, default=1.0)
+    parser.add_argument("--min-rms", type=float, default=0.005)
+    parser.add_argument("--min-vad-ratio", type=float, default=0.1)
     parser.add_argument("--interval", type=float, default=2.0)
     parser.add_argument("--max-attempts", type=int, default=0)
     parser.add_argument(
@@ -98,15 +119,23 @@ def main() -> None:
             )
             audio_np = np.array(audio, dtype=np.float32)
             rms = float(np.sqrt(np.mean(np.square(audio_np)))) if audio_np.size else 0.0
+            vad_ratio = _vad_ratio(audio_np, int(results[0].sample_rate))
             logger.info(
-                "MLX test ok: attempt={} sr={} samples={} rms={:.6f}",
+                "MLX test ok: attempt={} sr={} samples={} rms={:.6f} vad_ratio={:.3f}",
                 attempt,
                 results[0].sample_rate,
                 audio_np.shape[0],
                 rms,
+                vad_ratio,
             )
-            if audio_np.size == 0 or rms < 1e-4:
-                raise RuntimeError("Audio output too small")
+            if audio_np.size == 0:
+                raise RuntimeError("Audio output is empty")
+            if rms < args.min_rms:
+                raise RuntimeError(f"Audio RMS too low: {rms:.8f} < {args.min_rms:.8f}")
+            if vad_ratio < args.min_vad_ratio:
+                raise RuntimeError(
+                    f"Audio voiced ratio too low: {vad_ratio:.4f} < {args.min_vad_ratio:.4f}"
+                )
             break
         except TimeoutError as exc:
             logger.error("MLX test timed out on attempt {}: {}", attempt, exc)

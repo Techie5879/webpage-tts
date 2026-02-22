@@ -17,11 +17,19 @@ import {
 import { useSettings, useSpeakers } from "@/SettingsContext";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useEffect, useState } from "react";
 
 export function SessionPanel() {
   const { state, saveField, saveFieldDebounced, dispatch } = useSettings();
   const { speakers } = useSpeakers(state.serverUrl);
   const isCollapsed = state.collapsedSections?.session ?? false;
+  const [chunkSizeInput, setChunkSizeInput] = useState<string>(
+    state.chunkSize > 0 ? String(state.chunkSize) : ""
+  );
+
+  useEffect(() => {
+    setChunkSizeInput(state.chunkSize > 0 ? String(state.chunkSize) : "");
+  }, [state.chunkSize]);
 
   const handleOpenChange = (open: boolean) => {
     dispatch({ type: "TOGGLE_SECTION", section: "session" });
@@ -114,15 +122,20 @@ export function SessionPanel() {
                 </Label>
                 <Input
                   id="chunkSize"
-                  type="number"
-                  min={200}
-                  max={1200}
-                  step={20}
-                  value={state.chunkSize}
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  value={chunkSizeInput}
                   onChange={(e) => {
-                    const v = Number(e.target.value) || 420;
-                    dispatch({ type: "SET_FIELD", field: "chunkSize", value: v });
-                    saveField("chunkSize", v);
+                    const raw = e.target.value;
+                    if (!/^\d*$/.test(raw)) return;
+                    setChunkSizeInput(raw);
+                    const parsed = raw === "" ? 0 : Number(raw);
+                    dispatch({ type: "SET_FIELD", field: "chunkSize", value: parsed });
+                  }}
+                  onBlur={() => {
+                    const parsed = chunkSizeInput === "" ? 0 : Number(chunkSizeInput);
+                    saveField("chunkSize", Number.isFinite(parsed) ? parsed : 0);
                   }}
                   className="mt-1 h-9"
                 />
@@ -148,7 +161,7 @@ export function SessionPanel() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="selection">
-                      Selection (fallback to page)
+                      Selection only
                     </SelectItem>
                     <SelectItem value="page">Whole page</SelectItem>
                   </SelectContent>

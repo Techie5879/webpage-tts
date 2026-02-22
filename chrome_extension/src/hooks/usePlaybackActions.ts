@@ -57,6 +57,14 @@ export function usePlaybackActions() {
       : "Idle.";
 
   const handleSpeak = async () => {
+    if (playback.status === "paused") {
+      const resumeResponse = await sendMessage<{ type: "resume" }, BasicResponse>({
+        type: "resume",
+      });
+      console.log("[WebpageTTS] sidepanel speak->resume response", resumeResponse);
+      return;
+    }
+
     const mode = settings.mode;
     let refAudioB64: string | null = null;
     let refText: string | null = null;
@@ -76,11 +84,13 @@ export function usePlaybackActions() {
 
     if (mode === "design" && !instruction) return;
 
+    const chunkSize = Number(settings.chunkSize) > 0 ? Number(settings.chunkSize) : 420;
+
     const payload: SpeakMessage = {
       type: "speak",
       serverUrl,
       source: settings.source,
-      chunkSize: Number(settings.chunkSize) || 420,
+      chunkSize,
       playbackTarget: "offscreen",
       mode,
       playbackRate: settings.playbackRate,
@@ -91,7 +101,10 @@ export function usePlaybackActions() {
       refText,
     };
 
+    console.log("[WebpageTTS] sidepanel speak payload", payload);
+
     const response = await sendMessage<SpeakMessage, BasicResponse>(payload);
+    console.log("[WebpageTTS] sidepanel speak response", response);
     if (!response?.ok) {
       dispatch({ type: "STOPPED" });
     }

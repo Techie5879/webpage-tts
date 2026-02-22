@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSettings, useSpeakers } from "@/SettingsContext";
 import { usePlaybackActions } from "@/hooks/usePlaybackActions";
 import { useVoiceActions } from "@/hooks/useVoiceActions";
@@ -32,6 +32,13 @@ export default function V5Accordion() {
   const pb = usePlaybackActions();
   const voice = useVoiceActions();
   const [cloneFileName, setCloneFileName] = useState<string>("");
+  const [chunkSizeInput, setChunkSizeInput] = useState<string>(
+    state.chunkSize > 0 ? String(state.chunkSize) : ""
+  );
+
+  useEffect(() => {
+    setChunkSizeInput(state.chunkSize > 0 ? String(state.chunkSize) : "");
+  }, [state.chunkSize]);
 
   return (
     <div className="flex h-full min-h-[400px] flex-col bg-background text-foreground">
@@ -89,10 +96,18 @@ export default function V5Accordion() {
           <div className="flex gap-2">
             <Button onClick={pb.handleSpeak} className="flex-1 gap-1.5 text-sm h-10">
               <Play className="h-4 w-4" />
-              Speak
+              {pb.playback.status === "paused" ? "Resume" : "Speak"}
             </Button>
-            <Button variant="outline" onClick={pb.handlePause} className="px-3 h-10">
-              <Pause className="h-4 w-4" />
+            <Button
+              variant="outline"
+              onClick={pb.playback.status === "paused" ? pb.handleResume : pb.handlePause}
+              className="px-3 h-10"
+            >
+              {pb.playback.status === "paused" ? (
+                <Play className="h-4 w-4" />
+              ) : (
+                <Pause className="h-4 w-4" />
+              )}
             </Button>
             <Button variant="outline" onClick={pb.handleStop} className="px-3 h-10 text-destructive">
               <Square className="h-4 w-4" />
@@ -315,15 +330,20 @@ export default function V5Accordion() {
             <div>
               <Label className="text-xs text-muted-foreground">Chunk size</Label>
               <Input
-                type="number"
-                min={200}
-                max={1200}
-                step={20}
-                value={state.chunkSize}
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                value={chunkSizeInput}
                 onChange={(e) => {
-                  const v = Number(e.target.value) || 420;
-                  dispatch({ type: "SET_FIELD", field: "chunkSize", value: v });
-                  saveField("chunkSize", v);
+                  const raw = e.target.value;
+                  if (!/^\d*$/.test(raw)) return;
+                  setChunkSizeInput(raw);
+                  const parsed = raw === "" ? 0 : Number(raw);
+                  dispatch({ type: "SET_FIELD", field: "chunkSize", value: parsed });
+                }}
+                onBlur={() => {
+                  const parsed = chunkSizeInput === "" ? 0 : Number(chunkSizeInput);
+                  saveField("chunkSize", Number.isFinite(parsed) ? parsed : 0);
                 }}
                 className="mt-1.5 h-9 text-sm"
               />
@@ -333,7 +353,7 @@ export default function V5Accordion() {
             <div className="flex items-baseline gap-2">
               <Label className="text-xs text-muted-foreground">Text source</Label>
               <span className="text-[11px] text-muted-foreground/70">
-                {state.source === "selection" ? "falls back to full page" : "reads entire page"}
+                {state.source === "selection" ? "selection only" : "whole page"}
               </span>
             </div>
             <div className="mt-1.5 flex gap-1">

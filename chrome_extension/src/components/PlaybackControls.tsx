@@ -85,7 +85,7 @@ export function PlaybackControls() {
       type: "speak",
       serverUrl,
       source: settings.source,
-      chunkSize: Number(settings.chunkSize) || 420,
+      chunkSize: Number(settings.chunkSize) > 0 ? Number(settings.chunkSize) : 420,
       playbackTarget: "offscreen",
       mode,
       playbackRate: settings.playbackRate,

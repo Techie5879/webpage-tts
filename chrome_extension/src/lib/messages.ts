@@ -95,7 +95,12 @@ export type RuntimeMessage =
   | BackgroundToOffscreenMessage;
 
 export type BasicResponse = { ok: boolean; error?: string };
-export type GetTextResponse = { text: string };
+export type GetTextResponse = {
+  text: string;
+  sourceUsed?: TextSource;
+  selectionLen?: number;
+  pageLen?: number;
+};
 
 function hasTypeField(value: unknown): value is { type: string } {
   return (

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import gc
 import io
 import json
 import struct
@@ -50,6 +51,8 @@ ModeName = Literal["default", "custom", "design", "clone"]
 _mlx_models: Dict[str, object] = {}
 _request_counter = 0
 _download_lock = threading.Lock()
+_mlx_infer_lock = threading.Lock()
+_shutdown_event = threading.Event()
 _startup_manifest_path = RUNTIME_DIR / "model_manifest.json"
 _startup_state: Dict[str, object] = {
     "stage": "idle",
@@ -64,6 +67,43 @@ _startup_state: Dict[str, object] = {
 
 def _set_startup_state(**kwargs: object) -> None:
     _startup_state.update(kwargs)
+
+
+def request_shutdown() -> None:
+    if not _shutdown_event.is_set():
+        logger.warning("Server shutdown requested")
+    _shutdown_event.set()
+
+
+def _cleanup_runtime() -> None:
+    model_count = len(_mlx_models)
+    _mlx_models.clear()
+    gc.collect()
+
+    try:
+        import mlx.core as mx
+
+        if hasattr(mx, "clear_cache"):
+            mx.clear_cache()
+            logger.info("Cleared MLX cache")
+        else:
+            mx.metal.clear_cache()
+            logger.info("Cleared MLX metal cache")
+    except Exception as exc:
+        logger.warning("Failed to clear MLX metal cache: {}", exc)
+
+    logger.info("Cleared MLX model cache entries={}", model_count)
+
+
+def shutdown_runtime(wait_for_inflight_sec: float = 30.0) -> None:
+    request_shutdown()
+    logger.info("Waiting for in-flight MLX synthesis (timeout={}s)", wait_for_inflight_sec)
+    acquired = _mlx_infer_lock.acquire(timeout=max(0.0, wait_for_inflight_sec))
+    if acquired:
+        _mlx_infer_lock.release()
+    else:
+        logger.warning("Timed out waiting for in-flight MLX synthesis during shutdown")
+    _cleanup_runtime()
 
 
 def _wav_header_info(data: bytes) -> Dict[str, object]:
@@ -140,9 +180,16 @@ def _download_model(model_key: str, model_id: str) -> Path:
     local_dir = model_local_dir(model_id)
     local_dir.mkdir(parents=True, exist_ok=True)
 
-    has_config = (local_dir / "config.json").exists()
-    has_weights = any(local_dir.glob("*.safetensors"))
-    if has_config and has_weights:
+    has_required = all(
+        [
+            (local_dir / "config.json").exists(),
+            (local_dir / "model.safetensors").exists(),
+            (local_dir / "tokenizer_config.json").exists(),
+            (local_dir / "speech_tokenizer" / "config.json").exists(),
+            (local_dir / "speech_tokenizer" / "model.safetensors").exists(),
+        ]
+    )
+    if has_required:
         logger.info("Model {} already present at {}", model_id, local_dir)
         return local_dir
 
@@ -173,9 +220,23 @@ def _download_model(model_key: str, model_id: str) -> Path:
             "*.md",
             "*tokenizer*",
             "speech_tokenizer/*",
+            "speech_tokenizer/*.json",
+            "speech_tokenizer/*.safetensors",
         ],
         max_workers=8,
     )
+
+    has_required_after = all(
+        [
+            (local_dir / "config.json").exists(),
+            (local_dir / "model.safetensors").exists(),
+            (local_dir / "tokenizer_config.json").exists(),
+            (local_dir / "speech_tokenizer" / "config.json").exists(),
+            (local_dir / "speech_tokenizer" / "model.safetensors").exists(),
+        ]
+    )
+    if not has_required_after:
+        raise RuntimeError(f"Model download incomplete for {model_id}: {local_dir}")
 
     took = round(time.time() - start, 2)
     logger.info(
@@ -315,7 +376,17 @@ def _read_ref_audio_mlx(model, b64: str) -> Tuple["mx.array", int]:
 
 
 def _synthesize_mlx(req: TTSRequest) -> Tuple[np.ndarray, int]:
-    logger.info("MLX synth: mode={} text_len={}", req.mode, len(req.text))
+    logger.info(
+        "MLX synth input: mode={} text_len={} text={} speaker={} instruction={} custom_model_size={} ref_text={} ref_audio_b64_len={}",
+        req.mode,
+        len(req.text),
+        req.text,
+        req.speaker,
+        req.instruction,
+        req.custom_model_size,
+        req.ref_text,
+        len(req.ref_audio_b64 or ""),
+    )
     model_id = _resolve_model_id(req)
     model = _get_mlx_model(model_id)
     voice = req.speaker or DEFAULT_SPEAKER
@@ -344,6 +415,17 @@ def _synthesize_mlx(req: TTSRequest) -> Tuple[np.ndarray, int]:
         "instruct": req.instruction,
     }
     gen_kwargs.update(_mlx_gen_kwargs(req))
+    logger.info(
+        "MLX generate call: model_id={} voice={} speed={} stream={} verbose={} has_ref_audio={} has_ref_text={} instruct={}",
+        model_id,
+        voice,
+        gen_kwargs.get("speed"),
+        gen_kwargs.get("stream"),
+        gen_kwargs.get("verbose"),
+        ref_audio is not None,
+        bool(ref_text),
+        req.instruction,
+    )
 
     results = list(model.generate(**gen_kwargs))
     if not results:
@@ -367,6 +449,12 @@ def _synthesize_mlx(req: TTSRequest) -> Tuple[np.ndarray, int]:
     )
     _log_audio_stats(audio_np, sample_rate, "MLX")
     return audio_np, sample_rate
+
+
+@app.on_event("shutdown")
+def _on_shutdown() -> None:
+    logger.info("FastAPI shutdown event received")
+    shutdown_runtime()
 
 
 @app.get("/health")
@@ -435,11 +523,28 @@ def tts(req: TTSRequest) -> Response:
         req.top_k,
         req.max_new_tokens,
     )
+    logger.info(
+        "TTS request {} full payload: text={} instruction={} ref_text={} ref_audio_b64_len={}",
+        req_id,
+        req.text,
+        req.instruction,
+        req.ref_text,
+        len(req.ref_audio_b64 or ""),
+    )
 
     if req.backend != "mlx":
         raise HTTPException(status_code=400, detail="Only MLX backend is supported")
 
-    audio, sr = _synthesize_mlx(req)
+    if _shutdown_event.is_set():
+        raise HTTPException(status_code=503, detail="Server is shutting down")
+
+    lock_wait_started = time.time()
+    with _mlx_infer_lock:
+        wait_ms = int((time.time() - lock_wait_started) * 1000)
+        if wait_ms > 0:
+            logger.info("TTS request {} waited {}ms for MLX inference lock", req_id, wait_ms)
+        audio, sr = _synthesize_mlx(req)
+
     buf = io.BytesIO()
     sf.write(buf, audio, sr, format="WAV", subtype="PCM_16")
     wav_bytes = buf.getvalue()
