@@ -31,10 +31,33 @@ export default function V5Accordion() {
   const { speakers } = useSpeakers(state.serverUrl);
   const pb = usePlaybackActions();
   const voice = useVoiceActions();
-  const [cloneFileName, setCloneFileName] = useState<string>("");
   const [chunkSizeInput, setChunkSizeInput] = useState<string>(
     state.chunkSize > 0 ? String(state.chunkSize) : ""
   );
+  const [flashSaveDesign, setFlashSaveDesign] = useState(false);
+  const [flashSaveClone, setFlashSaveClone] = useState(false);
+  const [flashApply, setFlashApply] = useState(false);
+  const flashTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  useEffect(() => {
+    return () => flashTimers.current.forEach(clearTimeout);
+  }, []);
+
+  const flash = useCallback((setter: (v: boolean) => void) => {
+    setter(true);
+    const t = setTimeout(() => setter(false), 1500);
+    flashTimers.current.push(t);
+  }, []);
+  const trimmedInstruction = state.instruction.trim();
+  const isStyleApplied =
+    trimmedInstruction.length > 0 &&
+    trimmedInstruction === state.lastAppliedInstruction.trim();
+  const lastAppliedClock = state.lastAppliedAt
+    ? new Date(state.lastAppliedAt).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : "";
 
   useEffect(() => {
     setChunkSizeInput(state.chunkSize > 0 ? String(state.chunkSize) : "");

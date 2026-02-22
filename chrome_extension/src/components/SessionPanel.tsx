@@ -79,7 +79,7 @@ export function SessionPanel() {
                   placeholder="http://127.0.0.1:9872"
                   value={state.serverUrl}
                   onChange={(e) => {
-                    const v = e.target.value.trim();
+                    const v = e.target.value;
                     dispatch({ type: "SET_FIELD", field: "serverUrl", value: v });
                     saveFieldDebounced("serverUrl", v);
                   }}
