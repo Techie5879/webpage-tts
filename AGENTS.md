@@ -35,7 +35,13 @@
 - No formal test suite. Use `tests/mlx_tts.py` for a quick backend sanity check.
 - Tests should be runnable from the repo root and use `.venv/bin/python` or `uv run`.
 - Any test that validates generated audio must enforce both RMS and VAD-based voiced-ratio checks (not just non-empty WAV output).
-- After completing any feature change (backend, frontend, or UI), rerun the relevant test suite/scripts before handing off. Do this once per completed change set, not after every small patch.
+- After completing any code change (backend, frontend, or UI), rerun the full regression set before handing off. Do this once per completed change set, not after every small patch.
+- Default regression set to run after code changes:
+  - `uv run python tests/server_api.py --server-url http://127.0.0.1:9872`
+  - `uv run python tests/qwen_audio_smoke.py`
+  - `uv run python tests/ts_backend_coupling.py --server-url http://127.0.0.1:9872`
+  - `PYTHONUNBUFFERED=1 uv run python tests/server_runtime_regression.py 2>&1 | tee runtime-regression.log`
+  - `bun run build` (inside `chrome_extension/`)
 
 ## Commit & Pull Request Guidelines
 - No commit message convention is defined in this repo. Use clear, imperative messages (e.g., “Add MLX test script”).
@@ -52,3 +58,6 @@
 ## Long-Running Commands
 - For long-running downloads/builds/tests, always run unbuffered output and pipe through `tee` so progress is visible live and persisted to a log file.
 - Preferred pattern: `PYTHONUNBUFFERED=1 <command> 2>&1 | tee <log-file>`.
+- Do not bundle a long-lived background server plus dependent tests into one combined shell one-liner with traps/pipes; this can leave the CLI session hanging even when tests finish.
+- Always orchestrate server-backed tests in explicit phases: (1) start server, (2) wait for health/readiness with a bounded timeout, (3) run test commands, (4) stop server explicitly and confirm exit.
+- If a command may wait indefinitely, enforce a bounded timeout or a deterministic shutdown condition before handoff.
