@@ -105,6 +105,10 @@ export function usePlaybackActions() {
 
     const response = await sendMessage<SpeakMessage, BasicResponse>(payload);
     console.log("[WebpageTTS] sidepanel speak response", response);
+    if (mode === "custom" && response?.ok) {
+      saveField("lastAppliedInstruction", instruction || "");
+      saveField("lastAppliedAt", Date.now());
+    }
     if (!response?.ok) {
       dispatch({ type: "STOPPED" });
     }

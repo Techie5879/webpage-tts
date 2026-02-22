@@ -7,10 +7,15 @@ export const DEFAULTS = {
   playbackRate: 1,
   mode: "custom" as const,
   instruction: "",
+  lastAppliedInstruction: "",
+  lastAppliedAt: null as number | null,
   designPrompt: "",
   designName: "",
   cloneText: "",
   cloneName: "",
+  cloneAudioB64: null as string | null,
+  cloneAudioName: "",
+  selectedVoiceId: "",
   theme: "light" as const,
   savedVoices: [] as SavedVoice[],
   collapsedSections: {
@@ -36,7 +41,13 @@ export interface SavedVoice {
   id: string;
   name: string;
   type: "design" | "clone";
+  createdAt?: string;
+  sourceVoiceId?: string;
+  customModelSize?: "0.6b" | "1.7b";
+  speaker?: string;
   instruction?: string;
   refAudioB64?: string;
+  refAudioName?: string;
+  refAudioMimeType?: string;
   refText?: string;
 }

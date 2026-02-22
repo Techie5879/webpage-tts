@@ -22,11 +22,15 @@ export interface SettingsState {
   playbackRate: number;
   mode: "custom" | "design" | "clone";
   instruction: string;
+  lastAppliedInstruction: string;
+  lastAppliedAt: number | null;
   designPrompt: string;
   designName: string;
   cloneText: string;
   cloneName: string;
   cloneAudioB64: string | null;
+  cloneAudioName: string;
+  selectedVoiceId: string;
   theme: "light" | "dark";
   savedVoices: SavedVoice[];
   collapsedSections: Record<string, boolean>;
@@ -84,7 +88,6 @@ function settingsReducer(state: SettingsState, action: SettingsAction): Settings
 
 const initialState: SettingsState = {
   ...DEFAULTS,
-  cloneAudioB64: null,
   loaded: false,
 };
 
@@ -130,6 +133,14 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         }
       }
       Object.assign(payload, persistedPayload);
+      const normalizedVoices = Array.isArray(payload.savedVoices) ? payload.savedVoices : [];
+      payload.savedVoices = normalizedVoices;
+      if (
+        payload.selectedVoiceId &&
+        !normalizedVoices.some((voice) => voice.id === payload.selectedVoiceId)
+      ) {
+        payload.selectedVoiceId = "";
+      }
       if (data.theme === "default") payload.theme = "light";
       if (data.mode === "default") payload.mode = "custom";
       dispatch({ type: "SET_ALL", payload });
@@ -144,11 +155,17 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!state.loaded) return;
     const toSave: Partial<Record<PersistedKey, PersistedSettings[PersistedKey]>> = {};
+    const toRemove: PersistedKey[] = [];
     for (const key of Object.keys(DEFAULTS) as PersistedKey[]) {
       const val = state[key];
       if (val !== undefined && JSON.stringify(val) !== JSON.stringify(DEFAULTS[key])) {
         toSave[key] = val as PersistedSettings[typeof key];
+      } else {
+        toRemove.push(key);
       }
+    }
+    if (toRemove.length > 0) {
+      chrome.storage.local.remove(toRemove);
     }
     if (Object.keys(toSave).length > 0) {
       chrome.storage.local.set(toSave);
