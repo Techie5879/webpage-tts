@@ -7,7 +7,9 @@ import sys
 import time
 from pathlib import Path
 
+import mlx.core as mx
 import numpy as np
+from mlx_audio.tts.utils import load_model
 from scipy.signal import resample_poly
 import webrtcvad
 from loguru import logger
@@ -91,8 +93,6 @@ def main() -> None:
             if args.timeout > 0:
                 signal.alarm(args.timeout)
 
-            from mlx_audio.tts.utils import load_model
-
             model = load_model(args.model)
             results = list(
                 model.generate(
@@ -109,8 +109,6 @@ def main() -> None:
             )
             if not results:
                 raise RuntimeError("MLX returned no audio")
-
-            import mlx.core as mx
 
             audio = (
                 mx.concatenate([r.audio for r in results], axis=0)

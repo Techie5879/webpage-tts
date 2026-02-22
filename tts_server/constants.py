@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 DEFAULT_CUSTOMVOICE_SPEAKERS = [
     "Vivian",
     "Serena",

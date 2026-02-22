@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import Dict, Literal, Optional, Tuple
 
+import mlx.core as mx
 import numpy as np
 import soundfile as sf
 from dotenv import find_dotenv, load_dotenv
@@ -18,7 +19,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from huggingface_hub import snapshot_download
 from loguru import logger
+from mlx_audio.tts.utils import load_model
 from pydantic import BaseModel, Field
+from scipy.signal import resample
 
 from .config import (
     DEFAULT_CUSTOM_MODEL_SIZE,
@@ -75,14 +78,20 @@ def request_shutdown() -> None:
     _shutdown_event.set()
 
 
-def _cleanup_runtime() -> None:
+def shutdown_runtime(wait_for_inflight_sec: float = 30.0) -> None:
+    request_shutdown()
+    logger.info("Waiting for in-flight MLX synthesis (timeout={}s)", wait_for_inflight_sec)
+    acquired = _mlx_infer_lock.acquire(timeout=max(0.0, wait_for_inflight_sec))
+    if acquired:
+        _mlx_infer_lock.release()
+    else:
+        logger.warning("Timed out waiting for in-flight MLX synthesis during shutdown")
+
     model_count = len(_mlx_models)
     _mlx_models.clear()
     gc.collect()
 
     try:
-        import mlx.core as mx
-
         if hasattr(mx, "clear_cache"):
             mx.clear_cache()
             logger.info("Cleared MLX cache")
@@ -93,17 +102,6 @@ def _cleanup_runtime() -> None:
         logger.warning("Failed to clear MLX metal cache: {}", exc)
 
     logger.info("Cleared MLX model cache entries={}", model_count)
-
-
-def shutdown_runtime(wait_for_inflight_sec: float = 30.0) -> None:
-    request_shutdown()
-    logger.info("Waiting for in-flight MLX synthesis (timeout={}s)", wait_for_inflight_sec)
-    acquired = _mlx_infer_lock.acquire(timeout=max(0.0, wait_for_inflight_sec))
-    if acquired:
-        _mlx_infer_lock.release()
-    else:
-        logger.warning("Timed out waiting for in-flight MLX synthesis during shutdown")
-    _cleanup_runtime()
 
 
 def _wav_header_info(data: bytes) -> Dict[str, object]:
@@ -316,8 +314,6 @@ def _get_mlx_model(model_id: str):
         logger.info("MLX model cache hit: {}", model_id)
         return _mlx_models[model_id]
 
-    from mlx_audio.tts.utils import load_model
-
     model_path = model_local_dir(model_id)
     if not model_path.exists():
         raise RuntimeError(f"Model path is missing: {model_path}")
@@ -359,10 +355,7 @@ def _log_audio_stats(audio: np.ndarray, sr: int, label: str) -> None:
     )
 
 
-def _read_ref_audio_mlx(model, b64: str) -> Tuple["mx.array", int]:
-    import mlx.core as mx
-    from scipy.signal import resample
-
+def _read_ref_audio_mlx(model, b64: str) -> Tuple[mx.array, int]:
     audio_bytes = _decode_b64_audio(b64)
     wav, sr = sf.read(io.BytesIO(audio_bytes))
     if wav.ndim > 1:
@@ -431,8 +424,6 @@ def _synthesize_mlx(req: TTSRequest) -> Tuple[np.ndarray, int]:
     if not results:
         logger.error("MLX backend returned no audio")
         raise HTTPException(status_code=500, detail="MLX backend returned no audio")
-
-    import mlx.core as mx
 
     audio = (
         mx.concatenate([r.audio for r in results], axis=0)

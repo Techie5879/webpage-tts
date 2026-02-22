@@ -5,7 +5,9 @@ import sys
 import time
 from pathlib import Path
 
+import mlx.core as mx
 import numpy as np
+from mlx_audio.tts.utils import load_model
 import soundfile as sf
 from loguru import logger
 from scipy.signal import resample_poly
@@ -29,8 +31,6 @@ def _run_one(
     min_duration_sec: float,
     min_vad_ratio: float,
 ) -> Path:
-    from mlx_audio.tts.utils import load_model
-
     model_path = model_local_dir(MODEL_IDS[model_key])
     if not model_path.exists():
         raise RuntimeError(f"Missing model directory: {model_path}")
@@ -52,8 +52,6 @@ def _run_one(
     )
     if not results:
         raise RuntimeError(f"{model_label}: model returned no audio")
-
-    import mlx.core as mx
 
     audio = (
         mx.concatenate([chunk.audio for chunk in results], axis=0)

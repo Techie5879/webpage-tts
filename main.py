@@ -5,9 +5,23 @@ import platform
 import signal
 from typing import NoReturn
 
+import mlx.core as mx
 import uvicorn
 from dotenv import find_dotenv, load_dotenv
 from loguru import logger
+
+from tts_server.app import prefetch_all_models, request_shutdown
+from tts_server.config import (
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    HF_HOME_DIR,
+    LOG_DIR,
+    MODELS_DIR,
+    MODEL_IDS,
+    apply_runtime_env,
+    ensure_runtime_dirs,
+)
+from tts_server.logging_utils import setup_logging
 
 
 def _load_repo_dotenv() -> str | None:
@@ -46,8 +60,6 @@ def _run_doctor(model_ids, models_dir, hf_home_dir, log_dir) -> int:
         return 1
 
     try:
-        import mlx.core as mx
-
         logger.info("MLX default device: {}", mx.default_device())
     except Exception as exc:
         logger.exception("MLX import/device check failed: {}", exc)
@@ -58,8 +70,6 @@ def _run_doctor(model_ids, models_dir, hf_home_dir, log_dir) -> int:
 
 
 def _run_serve(host: str, port: int, reload: bool) -> NoReturn:
-    from tts_server.app import prefetch_all_models, request_shutdown
-
     logger.info("Prefetching all required models before server start")
     prefetch_all_models()
     logger.info("Starting uvicorn on {}:{}", host, port)
@@ -117,18 +127,6 @@ def _run_serve(host: str, port: int, reload: bool) -> NoReturn:
 def main() -> None:
     dotenv_path = _load_repo_dotenv()
 
-    from tts_server.config import (
-        DEFAULT_HOST,
-        DEFAULT_PORT,
-        HF_HOME_DIR,
-        LOG_DIR,
-        MODELS_DIR,
-        MODEL_IDS,
-        apply_runtime_env,
-        ensure_runtime_dirs,
-    )
-    from tts_server.logging_utils import setup_logging
-
     apply_runtime_env()
     ensure_runtime_dirs()
     setup_logging()
@@ -144,8 +142,6 @@ def main() -> None:
         raise SystemExit(_run_doctor(MODEL_IDS, MODELS_DIR, HF_HOME_DIR, LOG_DIR))
 
     if args.command == "prefetch":
-        from tts_server.app import prefetch_all_models
-
         prefetch_all_models()
         logger.info("Prefetch complete")
         return
